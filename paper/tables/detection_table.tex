@@ -1,0 +1,25 @@
+\begin{table}[t]
+\centering
+\caption{Peak detection. Synthetic specimens: intensity-weighted
+recall of known emitted lines, precision of detected peaks, and
+median absolute mass error of matched lines. Public datasets with
+expert range files: ion-weighted recall of reference ranges.
+Bold = best per column.}
+\label{tab:detection}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+ & \multicolumn{3}{c}{Synthetic (exact lines)} & Range files \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-5}
+Method & Recall$_w$ & Precision & $|\Delta m|$ (ppm) & Recall$_{ion}$ \\
+\midrule
+\rf{} & \textbf{1.000} & 0.984 & \textbf{2.2} & 0.997 \\
+APAV & 1.000 & 0.974 & 168.2 & 0.998 \\
+PyCCAPT & 1.000 & 0.974 & 198.6 & 0.991 \\
+pyOpenMS & 0.991 & 0.688 & 94.1 & \textbf{0.999} \\
+ms\_deisotope & 1.000 & \textbf{1.000} & 100.2 & 0.994 \\
+APyT & 1.000 & 0.974 & 168.2 & 0.998 \\
+na\"ive & 1.000 & 0.918 & 168.2 & 0.999 \\
+\bottomrule
+\end{tabular}
+\end{table}

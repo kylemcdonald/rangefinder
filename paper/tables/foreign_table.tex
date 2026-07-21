@@ -1,0 +1,22 @@
+\begin{table}[t]
+\centering
+\caption{Out-of-domain spectra. Left: 120 MassBank-derived
+semi-synthetic profile spectra (organic fragment chemistry, exact
+curated line lists). Right: real ToF-SIMS negative-polarity
+spectra; recall on a reference list of known inorganic ions.
+Bridge-based comparators are omitted here (in-process detectors
+only).}
+\label{tab:foreign}
+\small
+\begin{tabular}{lrrrr|rr}
+\toprule
+ & \multicolumn{4}{c|}{MassBank semi-synthetic} & \multicolumn{2}{c}{ToF-SIMS} \\
+Method & Recall$_w$ & Precision & False pk & $|\Delta m|$ ppm & Ion recall & Peaks \\
+\midrule
+\rf{} & 0.980 & 0.994 & 0.0 & 82.1 & 1.000 & 156 \\
+PyCCAPT & 0.974 & 0.979 & 0.1 & 95.5 & 1.000 & 128 \\
+pyOpenMS & 0.974 & 0.573 & 2.9 & 78.9 & 1.000 & 148 \\
+na\"ive & 0.994 & 0.874 & 0.5 & 106.6 & 1.000 & 172 \\
+\bottomrule
+\end{tabular}
+\end{table}

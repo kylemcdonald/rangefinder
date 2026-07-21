@@ -1,0 +1,47 @@
+# Nominal atomic-percent compositions for the downloaded reference datasets.
+# Values are idealized bulk compositions; real APT spectra additionally carry
+# residual-gas H, FIB Ga, and surface oxide signal that is not in these numbers.
+# The Si example dataset is documented as a silicon specimen, but its spectrum
+# unambiguously contains Ni (Ni2+ at 28.97/29.97 and Ni+ at 57.94/59.93 with the
+# natural 58/60/61/62 pattern), i.e. it is a Si/Ni-silicide-type measurement.
+# No certified composition exists, so no numeric nominal values are asserted and
+# the acceptance criteria are qualitative: Si must dominate, Ni must be detected,
+# and no strong isotope anomalies may be fabricated.
+control_Ck10_steel_felfer_R56_01769:
+  # DIN Ck10 / C10E, converted from wt% (C 0.10, Mn 0.45, bal. Fe) to at%.
+  Fe: 99.1
+  C: 0.46
+  Mn: 0.46
+control_W_18K_breen_kuehbach_R18_53222:
+  W: 100.0
+# FeO (wuestite), Zenodo 10677562 (R5076_69145, LEAP-5000 XS), CC-BY-4.0.
+# Exact 1:1 cation:anion stoichiometry; note APT systematically undercounts O
+# in oxides, so the O deficit is a physics bias shared by every method.
+feoxide_10677562_R5076_69145-v01:
+  Fe: 50.0
+  O: 50.0
+# Pure lithium, Zenodo 14848236 (R5076_68722), CC-BY-4.0.
+li_14848236_R5076_68722:
+  Li: 100.0
+# (V,Al)N nitride film (plan-view, annealed 800 C), Zenodo 7788883 (Saelker et
+# al., "Computer vision assisted decomposition analysis of APT data"), CC-BY-4.0.
+# Ships an expert .rrng (elements N, Al, V, Ar, C, O, Ga), so composition truth
+# is range-file-derived (same tier as ODS/MoHf). Transition-metal nitride — a
+# new chemistry class for the control set; ions field-evaporate mostly as 2+.
+# No nominal numeric entry; truth comes from applying the shipped ranges.
+#
+# NOTE: Zenodo 5838237 "Pristine FeO" (R76_45587) was evaluated and REJECTED as
+# a Fe:O=1:1 ground truth. Direct inspection of the 17.8M-event spectrum shows
+# oxygen is nearly absent (O+, O2+, FeO+ are ~3-4 orders of magnitude below
+# Fe2+), and a large peak sits at the "55" position (Mn2+ or a pile-up ridge of
+# the dominant 56Fe2+). The specimen does not present a stoichiometric-oxide
+# spectrum, so asserting Fe50/O50 would be false truth. Excluded from controls.
+# ODS ferritic steel (Portland State, Wang; Zenodo 7979668, usa_portland_wang).
+# No certified composition shipped; the range file covers Fe, Cr, Y, Ti, O, Mn,
+# consistent with a 14YWT/MA957-class ODS steel. Acceptance is qualitative:
+# Fe-dominant, Cr at the several-at% level, Y/Ti/O detected, no fabricated
+# strong isotope anomalies.
+# Mo-Hf alloy (Montanuniversitaet Leoben, Leitner; Zenodo 7979668,
+# aut_leoben_leitner). Range file covers Mo, Hf, C, B, N, O, Zr, Ga -- an
+# MHC-class molybdenum alloy. Acceptance is qualitative: Mo-dominant, Hf
+# detected at the sub-at% level, no fabricated strong isotope anomalies.

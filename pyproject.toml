@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rangefinder"
+dynamic = ["version"]
+description = "Automated ranging, species identification, and composition for time-of-flight (APT) mass spectra"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kyle McDonald" }]
+keywords = ["atom probe tomography", "mass spectrometry", "ranging", "composition"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+  "ase>=3.22",
+  "ifes-apt-tc-data-modeling>=0.4",
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+  "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+# Foreign-toolchain comparators used only by the benchmark harness.
+comparators = ["pyccapt>=0.2", "pyopenms>=3.0"]
+test = ["pytest>=8"]
+dev = ["build>=1.2", "pytest>=8", "ruff>=0.9", "twine>=6"]
+
+[project.urls]
+Homepage = "https://github.com/kylemcdonald/rangefinder"
+Repository = "https://github.com/kylemcdonald/rangefinder.git"
+Issues = "https://github.com/kylemcdonald/rangefinder/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rangefinder.__version__" }
+
+[tool.setuptools.package-data]
+rangefinder = ["config/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

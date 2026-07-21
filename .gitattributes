@@ -1,0 +1,15 @@
+* text=auto
+
+# Reference range files arrive with mixed platform line endings. Store their
+# textual content consistently so initial commits and future downloads diff cleanly.
+*.rrng text eol=lf
+*.RRNG text eol=lf
+*.txt text eol=lf
+
+# Raw instrument data and archives are binary (and normally git-ignored).
+*.pos binary
+*.POS binary
+*.epos binary
+*.EPOS binary
+*.zip binary
+*.pdf binary

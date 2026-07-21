@@ -1,0 +1,360 @@
+analysis:
+  min_mz: 0.0
+  # 240 Da keeps singly charged heavy species (W+, Pt+, Au+, Pb+, Bi+, U2+) inside
+  # the analyzed window instead of silently truncating them at 200 Da.
+  max_mz: 240.0
+  zoom_max_mz: 120.0
+  max_detection_bin_width_da: 0.02
+  ppm_tolerance: 2500.0
+  min_absolute_tolerance_da: 0.03
+  max_absolute_tolerance_da: 0.15
+  bin_width_candidates_da:
+    - 0.01
+    - 0.02
+    - 0.05
+  default_zoom_bin_width_da: 0.01
+  custom_savgol_window_bins: 9
+  custom_savgol_polyorder: 2
+  custom_raw_refine_enabled: true
+  custom_raw_refine_window_half_width_da: 0.08
+  custom_raw_refine_local_bin_width_da: 0.002
+  custom_raw_refine_smooth_sigma_da: 0.004
+  custom_raw_refine_min_events: 40
+  custom_raw_refine_max_shift_da: 0.02
+  custom_max_fwhm_da: 0.25
+  custom_max_integration_half_width_da: 0.18
+  custom_single_source_neighbor_exclusion_da: 0.22
+  custom_single_source_prominence_ratio_max: 0.25
+  custom_single_source_neighbor_min_da: 0.04
+  custom_single_source_neighbor_fwhm_scale: 1.25
+  # Disabled by default: benchmarked evidence shows the log-peakiness rescue
+  # channel never improves detection recall of real peaks and worsens
+  # composition (it added 17 spurious peaks on FeO, +0.24 mean L1 on the
+  # ablation controls). Kept behind this flag as an opt-in for trace recall on
+  # unknown specimens, but not part of the default pipeline. See paper ablation.
+  custom_log_peakiness_enabled: false
+  custom_log_smooth_sigma_bins: 0.8
+  custom_log_baseline_window_bins: 121
+  custom_log_min_excess: 0.018
+  custom_log_min_prominence: 0.020
+  custom_log_min_count: 15.0
+  custom_log_min_distance_bins: 2
+  custom_log_min_detection_percentile: 75.0
+  custom_log_max_detection_percentile: 90.0
+  custom_log_tail_strength_center: 7.2
+  custom_log_tail_strength_scale: 0.7
+  custom_log_rescue_enabled: true
+  custom_log_rescue_min_peakiness: 5.5
+  custom_log_rescue_min_count: 45.0
+  custom_log_rescue_min_prominence: 0.18
+  custom_log_rescue_relaxed_min_peakiness: 4.2
+  custom_log_rescue_relaxed_min_count: 60.0
+  custom_log_rescue_relaxed_min_prominence: 0.40
+  custom_log_rescue_general_cluster_max_mz_da: 40.0
+  custom_log_rescue_general_cluster_min_peakiness: 1.5
+  custom_log_rescue_general_cluster_min_count: 180.0
+  custom_log_rescue_general_cluster_min_prominence: 0.14
+  custom_log_rescue_dense_cluster_max_mz_da: 40.0
+  custom_log_rescue_dense_cluster_min_peakiness: 0.8
+  custom_log_rescue_dense_cluster_min_count: 1000.0
+  custom_log_rescue_dense_cluster_min_prominence: 0.10
+  custom_log_rescue_high_mz_threshold_da: 80.0
+  custom_log_rescue_high_mz_min_peakiness: 4.5
+  custom_log_rescue_high_mz_min_count: 35.0
+  custom_log_rescue_high_mz_min_prominence: 0.45
+  custom_log_rescue_broad_high_mz_threshold_da: 80.0
+  custom_log_rescue_broad_min_peakiness: 2.8
+  custom_log_rescue_broad_min_count: 250.0
+  custom_log_rescue_broad_min_prominence: 0.25
+  custom_log_rescue_support_radius_da: 1.05
+  custom_log_rescue_isolated_support_radius_da: 0.60
+  custom_log_rescue_isolated_low_count_max: 120.0
+  custom_log_rescue_isolated_min_peakiness: 7.0
+  custom_log_rescue_isolated_min_prominence: 0.35
+  custom_log_rescue_isolated_low_mz_threshold_da: 10.0
+  custom_log_rescue_isolated_low_mz_min_prominence: 0.45
+  custom_log_rescue_window_da: 2.0
+  custom_log_rescue_max_per_window: 4
+  custom_local_snap_enabled: true
+  custom_local_snap_search_da: 0.05
+  custom_local_snap_merge_tolerance_da: 0.012
+  custom_local_snap_smooth_window_bins: 7
+  custom_local_fit_enabled: true
+  custom_local_fit_cluster_gap_da: 0.65
+  custom_local_fit_min_peaks: 3
+  custom_local_fit_max_window_span_da: 3.0
+  custom_local_fit_window_margin_da: 0.2
+  custom_local_fit_center_tolerance_da: 0.05
+  custom_local_fit_sigma_floor_da: 0.015
+  custom_local_fit_sigma_ceiling_da: 0.1
+  custom_local_fit_min_relative_amplitude: 0.012
+  custom_local_fit_min_absolute_amplitude: 25.0
+  custom_local_fit_merge_tolerance_da: 0.045
+  custom_local_fit_seed_relative_prominence_min: 0.01
+  custom_local_fit_seed_min_detection_sources: 2
+  custom_local_fit_center_replace_max_shift_da: 0.008
+  custom_local_fit_fallback_seed_count_min: 3
+  custom_local_fit_fallback_max_component_ratio: 0.5
+  custom_local_fit_fallback_min_seed_gap_da: 0.30
+  custom_local_fit_fallback_min_seed_span_da: 0.80
+  custom_local_fit_preserve_seed_min_gap_da: 0.14
+  custom_local_fit_preserve_seed_relative_prominence_min: 0.05
+  custom_local_fit_preserve_seed_min_prominence: 150.0
+  custom_local_fit_preserve_seed_min_height: 150.0
+  custom_local_fit_bins_per_sigma: 5.0
+  custom_local_fit_offset_penalty: 0.15
+  custom_local_fit_sigma_penalty: 0.08
+  custom_tail_artifact_suppression_enabled: true
+  custom_tail_artifact_max_distance_da: 0.30
+  custom_tail_artifact_height_ratio_min: 12.0
+  custom_tail_artifact_valley_ratio_min: 0.5
+  custom_family_hint_enabled: true
+  # Ground-truth controls showed family hints could hijack peaks of other
+  # species: matches are now ppm-capped, the dominant isotope must dominate the
+  # fit, and abundance coherence multiplies the hint score.
+  custom_family_hint_match_ppm: 350.0
+  custom_family_hint_match_tolerance_floor_da: 0.012
+  custom_family_hint_fit_tolerance_floor_da: 0.010
+  custom_family_hint_dominant_min_ratio: 0.5
+  # Refractory metals (W, Mo, Ta) routinely field-evaporate as 3+/4+; a
+  # charge-3 ceiling makes their 4+ isotope families invisible to the hint
+  # stage and their peaks fall through to molecular misassignment.
+  custom_family_hint_max_charge: 4
+  # Family completion (widening the window for a confirmed fingerprint's
+  # remaining isotopes) is disabled by default: it had zero measurable effect
+  # on any benchmark dataset (member verification + family recovery already
+  # cover the same failure mode), so we favor the simpler pipeline. A scale of
+  # 1.0 = no widening; raise it to re-enable completion.
+  custom_family_completion_min_matches: 3
+  custom_family_completion_tolerance_scale: 1.0
+  custom_family_hint_min_abundance: 0.001
+  custom_family_hint_match_tolerance_da: 0.04
+  custom_family_hint_fit_tolerance_da: 0.03
+  custom_family_hint_min_total_counts: 200.0
+  custom_family_hint_window_margin_da: 0.20
+  custom_family_hint_shift_tolerance_da: 0.04
+  custom_family_hint_sigma_floor_da: 0.01
+  custom_family_hint_sigma_ceiling_da: 0.05
+  custom_family_hint_bins_per_sigma: 6.0
+  custom_family_hint_shift_penalty: 0.12
+  custom_family_hint_sigma_penalty: 0.08
+  custom_family_hint_recentering_max_da: 0.02
+  custom_family_hint_score_min: 2.8
+  custom_family_hint_max_elements: 12
+  custom_family_hint_min_element_support: 0.02
+  custom_family_hint_anchor_peak_limit: 24
+  isotope_audit_enabled: true
+  # Tail-aware audit: refit each family with a shared exponential tail (EMG) and
+  # treat the Gaussian-vs-EMG fraction difference as a peak-shape systematic.
+  isotope_audit_tail_enabled: true
+  isotope_audit_tail_tau_max_sigma_scale: 6.0
+  isotope_audit_tail_penalty: 0.05
+  isotope_audit_overlap_fwhm_scale: 1.5
+  isotope_audit_overlap_min_window_da: 0.06
+  # Systematic floor applied to anomaly z-scores: counting statistics alone are
+  # not a defensible error model at 1e5+ counts.
+  isotope_anomaly_systematic_fraction_floor: 0.005
+  isotope_anomaly_audit_support_ratio: 0.4
+  # Spatial region segmentation: voxel-composition clustering with strict
+  # acceptance gates (population, composition separation, silhouette, spatial
+  # coherence). Non-homogeneous specimens get a full independent analysis per
+  # region under <method>/regions/.
+  segmentation_enabled: true
+  segmentation_min_total_events: 200000
+  segmentation_target_events_per_voxel: 3000
+  segmentation_min_events_per_voxel: 500
+  segmentation_max_regions: 4
+  segmentation_min_region_fraction: 0.05
+  segmentation_min_composition_separation_at_pct: 10.0
+  segmentation_min_silhouette: 0.35
+  segmentation_min_neighbor_agreement: 0.60
+  segmentation_max_feature_elements: 6
+  spatial_stability_enabled: true
+  spatial_stability_slices: 5
+  spatial_stability_min_events_per_slice: 20000
+  spatial_stability_max_drift_at_pct: 3.0
+  isotope_audit_min_total_counts: 200.0
+  isotope_audit_window_margin_da: 0.25
+  isotope_audit_shift_tolerance_da: 0.04
+  isotope_audit_sigma_floor_da: 0.015
+  isotope_audit_sigma_ceiling_da: 0.10
+  isotope_audit_bins_per_sigma: 6.0
+  isotope_audit_shift_penalty: 0.15
+  isotope_audit_sigma_penalty: 0.10
+  isotope_audit_default_fwhm_da_by_charge:
+    default: 0.10
+    "1": 0.10
+    "2": 0.08
+    "3": 0.06
+    "4": 0.05
+  pyccapt_prominence_quantile: 0.95
+  pyccapt_min_prominence: 25.0
+  pyccapt_distance_bins: 3
+  pyopenms_signal_to_noise: 0.0
+  pyopenms_use_deisotoper: false
+  pyopenms_deisotope_min_charge: 1
+  pyopenms_deisotope_max_charge: 4
+  apyt_function: error-expDecay
+  apyt_scale_width: false
+  apyt_min_fit_mz: 0.01
+  apyt_atomic_volume_nm3: 0.015
+  apyt_max_candidate_elements: 8
+  apyt_max_charge: 3
+  apyt_max_molecular_charge: 2
+  apyt_max_molecular_atoms: 2
+  apyt_max_molecular_species: 16
+  apyt_min_support_score: 0.05
+  apyt_min_natural_probability: 1.0e-6
+  ms_deisotope_max_charge: 3
+  naive_prominence_quantile: 0.90
+  naive_min_prominence: 20.0
+  naive_distance_bins: 2
+  naive_core_half_width_bins: 1
+  naive_sideband_gap_bins: 1
+  naive_sideband_width_bins: 2
+  peak_integration_half_width_da: 0.12
+  local_baseline_half_width_da: 0.3
+  assignment_backend: joint_optimizer
+  joint_species_global_enabled: true
+  joint_species_global_max_rank: 4
+  joint_species_global_max_species: 48
+  joint_species_global_min_vote_area: 500.0
+  joint_species_global_weight: 1.10
+  joint_species_window_enabled: true
+  joint_species_window_max_rank: 4
+  joint_species_window_max_species: 16
+  joint_species_window_min_vote_area: 100.0
+  joint_species_window_weight: 1.45
+  joint_species_window_margin_da: 0.25
+  joint_species_sigma_floor_da: 0.03
+  joint_optimizer_iterations: 4
+  joint_optimizer_convergence_tol: 0.0001
+  joint_optimizer_global_species_weight: 0.22
+  joint_optimizer_window_species_weight: 0.28
+  joint_optimizer_global_element_weight: 0.16
+  joint_optimizer_global_family_weight: 0.24
+  joint_optimizer_support_probability_min: 0.10
+  joint_optimizer_global_species_min_peaks: 2
+  joint_optimizer_global_species_min_area: 500.0
+  joint_optimizer_window_species_min_peaks: 2
+  joint_optimizer_window_species_min_area: 150.0
+  pass1_max_charge: 2
+  pass1_max_molecular_charge: 2
+  pass1_max_molecular_atoms: 2
+  pass1_support_blend_weight: 0.7
+  max_charge: 4
+  max_molecular_charge: 3
+  max_molecular_atoms: 3
+  max_candidate_elements: 12
+  always_include_elements:
+    - H
+    - C
+    - N
+    - O
+    - B
+    - P
+    - S
+    - Si
+  # Molecular candidates whose constituent elements lack independent sample
+  # evidence are penalized: a molecule requires all of its elements to exist.
+  molecular_unsupported_element_min_support: 0.03
+  molecular_unsupported_element_penalty: 0.9
+  # Atomic candidates of elements with no independent sample-level evidence
+  # are penalized on a smooth ramp (full penalty at zero support, none at the
+  # threshold). Without this, always-included light elements (N, O, B) can
+  # capture charge-state peaks of the matrix element on pure-metal spectra.
+  atomic_unsupported_element_min_support: 0.05
+  atomic_unsupported_element_penalty: 0.8
+  # A molecular candidate matched through a minor isotopologue is only
+  # physical if its dominant isotopologue shows a correspondingly larger
+  # peak somewhere in the spectrum (mirror of the atomic dominant check).
+  molecular_envelope_penalty: 2.5
+  molecular_envelope_min_area_ratio: 0.25
+  # An X-hydride candidate sitting on a confirmed member position of X's own
+  # isotope family is the classic +1 Da systematic; the family keeps the
+  # area unless measured abundances actually deviate.
+  family_member_hydride_penalty: 1.1
+  # Noble gases essentially never field-evaporate in APT; they are almost
+  # always mass coincidences (He+ vs D2+). Hint an element to lift this.
+  exotic_elements: [He, Ne, Ar, Kr, Xe, Rn]
+  exotic_element_penalty: 1.5
+  # Family-directed member verification: members the blind detector missed
+  # (small isotopes riding a large neighbor's thermal tail) are verified as
+  # raw-spectrum excesses at their predicted positions.
+  custom_family_member_verify_enabled: true
+  custom_family_member_verify_min_z: 4.0
+  custom_family_member_verify_min_excess: 60.0
+  # Two-member family recovery: accepted only when the minor member's fitted
+  # fraction reproduces its natural value within this relative tolerance.
+  custom_family_recovery_two_member_minor_rel_tolerance: 0.6
+  # Molecular family fingerprint recovery (oxides/dimers/nitrides/carbides
+  # of atomically anchored elements).
+  custom_molecular_family_recovery_enabled: true
+  custom_molecular_family_min_matches: 3
+  custom_molecular_family_min_coherence: 0.75
+  custom_molecular_family_max_anchor_elements: 6
+  molecular_family_hint_weight: 1.2
+  # Final peak gate: a reported peak must be a significant local Poisson
+  # excess over its own sidebands (family members exempt).
+  custom_peak_significance_filter_enabled: true
+  custom_peak_significance_min_z: 5.0
+  # Assignment rows below this softmax probability are dropped from the
+  # weighted composition (with per-peak renormalization); losing candidates
+  # otherwise bleed a few percent of every large peak into phantom elements.
+  composition_probability_floor: 0.05
+  # Backward elimination: elements whose presence rests only on low-probability
+  # or molecular-side evidence (no atomic rank-1 anchor, no isotope-family
+  # fingerprint, not user-hinted) are removed from the library and the
+  # assignment is rerun. Mirrors how a human ranger works: identify the
+  # elements first, then explain every peak with that vocabulary.
+  element_pruning_enabled: true
+  element_pruning_max_rounds: 2
+  element_pruning_anchor_min_probability: 0.35
+  element_pruning_molecular_anchor_min_probability: 0.6
+  ambiguous_score_delta: 0.35
+  high_confidence_min_probability: 0.72
+  mass_score_weight: 3.5
+  support_score_weight: 0.35
+  natural_score_weight: 0.75
+  family_score_weight: 1.8
+  element_prior_weight: 0.9
+  charge_prior_weight: 0.55
+  family_prior_weight: 0.85
+  charge_hint_weight: 0.35
+  family_hint_weight: 0.85
+  family_hint_multi_weight: 0.28
+  neutral_hint_weight: 1.5
+  neutral_hint_requires_charge_match: true
+  family_l1_scale: 2.2
+  family_missing_score: 0.25
+  family_missing_dominant_penalty: 0.55
+  local_fit_enabled: true
+  local_fit_cluster_gap_da: 1.05
+  local_fit_min_peaks: 3
+  local_fit_max_window_span_da: 3.5
+  local_fit_min_total_area: 1000.0
+  local_fit_max_rank: 4
+  local_fit_weight: 1.35
+  local_fit_sigma_floor_da: 0.035
+  local_fit_window_margin_da: 0.25
+  charge_state_penalties:
+    "1": 0.0
+    "2": 0.0
+    "3": 0.65
+    "4": 2.3
+  unsupported_charge_prior_threshold: 0.12
+  unsupported_charge_penalties:
+    "3": 0.45
+    "4": 1.6
+  min_assignment_score_by_charge:
+    default: -1000000.0
+    "1": 0.0
+    "2": 0.0
+    "3": 1.2
+    "4": 1.75
+  min_isotope_counts_for_anomaly: 50
+  slight_anomaly_min_abs_fraction_diff: 0.01
+  strong_anomaly_min_abs_fraction_diff: 0.03
+  slight_anomaly_min_z: 3.0
+  strong_anomaly_min_z: 5.0
+  max_zoom_regions_per_method: 8

@@ -1,0 +1,29 @@
+\begin{table}[t]
+\centering
+\caption{Ablation: mean composition L1 and mean fabricated signal
+(at.\%) over the nine ablation controls, plus two sentinel cases:
+the Si--O oxide (molecular-ion apportionment) and pure W
+(phantom-element suppression). Rows above the rule disable one
+default stage (higher is worse); the two \texttt{++} rows re-enable
+stages that are \emph{off} by default, showing they do not help.}
+\label{tab:ablation}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Variant & mean L1 & mean fab. & Si--O L1 & W fab. \\
+\midrule
+Full pipeline (default) & 2.55 & 0.05 & 0.56 & 0.00 \\
+-- family fingerprints & 7.99 & 3.51 & 0.62 & 0.00 \\
+-- molecular-family recovery & 6.43 & 2.85 & 0.62 & 0.00 \\
+-- element pruning & 7.46 & 2.34 & 0.56 & 12.01 \\
+-- crowded-window deblending & 3.77 & 0.67 & 0.56 & 4.95 \\
+-- probability floor & 2.70 & 0.05 & 0.56 & 0.00 \\
+-- member verification & 2.52 & 0.05 & 0.56 & 0.00 \\
+-- isotopologue-envelope veto & 2.74 & 0.03 & 0.56 & 0.00 \\
+-- atomic support penalty & 5.18 & 1.09 & 0.56 & 0.00 \\
+\addlinespace
+++ log-peakiness channel (off by default) & 2.79 & 0.16 & 0.56 & 0.00 \\
+++ family completion (off by default) & 2.55 & 0.05 & 0.56 & 0.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
