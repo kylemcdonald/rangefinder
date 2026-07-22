@@ -24,6 +24,8 @@ class ProjectPaths:
 
     @classmethod
     def from_root(cls, root: Path) -> "ProjectPaths":
+        source_config = root / "src" / "rangefinder" / "config" / "defaults.yaml"
+        config_path = source_config if source_config.exists() else root / "config" / "defaults.yaml"
         return cls(
             root=root,
             data_dir=root / "data",
@@ -31,7 +33,7 @@ class ProjectPaths:
             logs_dir=root / "logs",
             docs_dir=root / "docs",
             cache_dir=root / ".cache",
-            config_path=root / "config" / "defaults.yaml",
+            config_path=config_path,
         )
 
     def sample_dir(self, sample_slug: str) -> Path:

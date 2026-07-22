@@ -17,6 +17,7 @@ from rangefinder.analysis.common import (
     refine_peak_centers_parabolic,
     smooth_counts,
 )
+from rangefinder.analysis.adaptive_ranging import apply_adaptive_ranging
 from rangefinder.analysis.assignment import infer_element_support
 from rangefinder.analysis.pipeline_utils import finalize_method_analysis
 from rangefinder.analysis.segmentation import segment_sample_regions
@@ -1700,6 +1701,12 @@ def detect_custom_peaks(sample_data, config):
     if "fit_peak_area" in peaks.columns:
         fit_mask = peaks["fit_peak_area"].notna()
         peaks.loc[fit_mask, "integrated_area"] = peaks.loc[fit_mask, "fit_peak_area"].astype(float)
+    peaks, adaptive_ranging_diagnostics = apply_adaptive_ranging(
+        peaks,
+        centers,
+        counts,
+        config=config,
+    )
     if bool(analysis_cfg.get("custom_peak_significance_filter_enabled", True)) and not peaks.empty:
         # Final significance gate: a reported peak must be a significant
         # local Poisson excess over its own sidebands. Background wiggles
@@ -1743,6 +1750,7 @@ def detect_custom_peaks(sample_data, config):
         },
         "peak_detection": "multi-resolution histogram detection with crowded-window local Gaussian-mixture fitting",
         "crowded_window_fits": local_fit_diagnostics,
+        "adaptive_ranging": adaptive_ranging_diagnostics,
         "dropped_insignificant_peaks": dropped_insignificant,
     }
     return centers, counts, peaks, detection_diagnostics_payload

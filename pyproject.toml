@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rangefinder"
 dynamic = ["version"]
-description = "Automated ranging, species identification, and composition for time-of-flight (APT) mass spectra"
+description = "Unsupervised ranging, ion identification, and composition for atom probe tomography mass spectra"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

@@ -1,9 +1,10 @@
 """Rangefinder: automated ranging, species identification, and composition for
-time-of-flight mass spectra.
+atom probe tomography mass spectra.
 
-Goes from a raw event list (``.pos``/``.epos`` or any array of m/z values) to
-ranged peaks, identified species, and isotope-resolved composition, with no
-user-supplied ranges, element list, or interactive tuning.
+The end-to-end pipeline is specific to positive-ion APT event data and its
+field-evaporation chemistry. Some low-level detection utilities can be adapted to
+other one-dimensional TOF mass spectra, but non-APT assignment and composition are
+outside the package's validated scope.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ __all__ = [
     "load_default_config",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def default_config_path() -> Path:

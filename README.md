@@ -2,15 +2,65 @@
 
 [![CI](https://github.com/kylemcdonald/rangefinder/actions/workflows/ci.yml/badge.svg)](https://github.com/kylemcdonald/rangefinder/actions/workflows/ci.yml)
 
-Automated **ranging**, species identification, and composition for time-of-flight
-(atom probe tomography) mass spectra. Rangefinder goes from a raw event list
-(`.pos`/`.epos`, or any array of *m/z* values) to ranged peaks, identified ionic
-species, and isotope-resolved composition — with **no user-supplied ranges, no
-candidate element list, no interactive tuning, and no manual curation**.
+Automated **ranging**, species identification, and composition for atom probe
+tomography (APT) mass spectra. Rangefinder goes from an APT event list
+(`.pos`/`.epos`, represented internally by reconstructed positions and *m/z*) to
+ranged peaks, identified positive ionic species, and isotope-resolved composition
+— with **no user-supplied ranges, no candidate element list, no interactive
+tuning, and no manual curation**.
 
 It is deterministic (operator variance is exactly zero), pure Python
 (NumPy/SciPy/pandas), and ships its own benchmark harness against the open-source
 APT ecosystem.
+
+## Scope
+
+Rangefinder is an **APT-specific end-to-end system**, not a general-purpose mass
+spectrometry or spectroscopy toolkit. Its physical and chemical model assumes:
+
+- event-level, one-dimensional time-of-flight *m/z* data;
+- positive atomic and small molecular ions typical of field evaporation;
+- APT-like peak widths and one-sided thermal tails;
+- natural-isotope family patterns, APT charge-state priors, and elemental atomic
+  percent as the final quantity; and
+- reconstructed `x_nm`, `y_nm`, and `z_nm` coordinates for the public pipeline
+  data model and optional spatial analyses.
+
+The histogramming, local peak detection, centroid refinement, and area-integration
+code is potentially reusable for other one-dimensional TOF mass spectra after
+adaptation and domain-specific validation. The MassBank and ToF-SIMS studies in
+this repository test **that detector only**. They do not validate Rangefinder's
+species assignment or composition outside APT; the benchmark adapters convert
+profile/centroid data to pseudo-events and disable APT family-assignment features.
+
+Rangefinder does not currently model negative-ion assignment, adduct and fragment
+chemistry, tandem MS, chromatography or ion mobility, arbitrary profile/centroid
+inputs, instrument-pluggable resolution models, or non-mass-spectrometry axes.
+For those use cases, use a domain-specific toolkit or extract and validate only
+the low-level detector.
+
+## Range and overlap auditing
+
+Every detected peak now carries two independent range estimates:
+
+- the production fixed/FWHM or crowded-window mixture-fit area; and
+- a clean-room equal-error range estimate with asymmetric boundaries, estimated
+  purity, recovery, background, missed signal, counting uncertainty, and the
+  fixed-versus-adaptive discrepancy.
+
+Equal-error ranging was inspired by the public
+[Atom-Probe-Toolbox](https://github.com/peterfelfer/Atom-Probe-Toolbox), but no
+GPL source was copied. It remains a **shadow diagnostic**, because the bundled
+ablation found a large synthetic-data improvement but regressions on seven of
+ten real composition controls.
+
+Composition uses a guarded natural-isotope-envelope deconvolution only for
+identifiable connected overlap groups with high-confidence species anchors,
+full-rank and conditioned envelope matrices, adequate observed coverage,
+optimizer convergence, and a residual pass. Rejected groups retain their
+assignment probabilities unchanged. Output tables preserve the uncorrected
+`atomic_percent_assignment` beside the promoted `atomic_percent_weighted`, and
+`diagnostics.json` records every accepted or rejected component.
 
 ## Install
 
@@ -77,6 +127,7 @@ scripts/bootstrap_env.sh                        # install comparator environment
 python scripts/run_benchmark.py                 # all methods x all datasets
 python scripts/run_detection_ablation.py        # detection-stage ablation
 python scripts/run_ablation.py                  # pipeline-stage ablation
+python scripts/run_quantification_ablation.py   # range/deconvolution promotion test
 python scripts/build_paper_tables.py            # regenerate paper/tables/*.tex
 tectonic paper/rangefinder.tex
 ```

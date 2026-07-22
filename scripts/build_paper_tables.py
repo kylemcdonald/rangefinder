@@ -2,9 +2,9 @@
 """Generate the Rangefinder paper's result tables from benchmark outputs.
 
 Reads outputs/benchmark/benchmark_results.json, outputs/benchmark_ablation/,
-outputs/benchmark_massbank/, outputs/benchmark_tofsims/ and writes
-paper/tables/*.tex. Never edits numbers by hand: rerun this script after any
-benchmark change.
+outputs/quantification_ablation_final/, outputs/benchmark_massbank/,
+outputs/benchmark_tofsims/ and writes paper/tables/*.tex. Never edits numbers
+by hand: rerun this script after any benchmark change.
 """
 from __future__ import annotations
 
@@ -222,18 +222,85 @@ def ablation_table() -> None:
     (TABLES / "ablation_table.tex").write_text("\n".join(lines) + "\n")
 
 
+def quantification_ablation_table() -> None:
+    path = (
+        ROOT
+        / "outputs"
+        / "quantification_ablation_final"
+        / "quantification_ablation.csv"
+    )
+    if not path.exists():
+        (TABLES / "quantification_ablation_table.tex").write_text(
+            "% quantification ablation pending\n"
+        )
+        return
+    frame = pd.read_csv(path)
+    frame = frame[frame["elemental_l1_at_pct"].notna()].copy()
+    order = [
+        ("legacy", "Fixed ranges + assignment probabilities"),
+        ("deconvolution", "+ guarded overlap deconvolution (default)"),
+        ("eer", "+ full equal-error ranges (not promoted)"),
+        ("eer_deconvolution", "Full EER + overlap deconvolution (not promoted)"),
+    ]
+    pivot = frame.pivot(index="dataset", columns="variant", values="elemental_l1_at_pct")
+    legacy = pivot["legacy"]
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\caption{Quantification ablation over all 14 controls with composition",
+        r"truth. Equal-error ranging (EER) substantially improves the four",
+        r"synthetic spectra but regresses seven of ten real controls, so it is",
+        r"retained as a shadow estimate rather than promoted. The guarded",
+        r"isotope-envelope solver changes only identifiable connected overlap",
+        r"groups and is the default. Better/same/worse counts use a 0.001\,at.\%",
+        r"tolerance relative to the fixed-range, assignment-probability baseline.}",
+        r"\label{tab:quantification_ablation}",
+        r"\small",
+        r"\begin{adjustbox}{max width=\textwidth}",
+        r"\begin{tabular}{lrrrrr}",
+        r"\toprule",
+        r"Variant & All L1 & Synthetic L1 & Real L1 & Mean fab. & Better/same/worse \\",
+        r"\midrule",
+    ]
+    for key, label in order:
+        sub = frame[frame["variant"] == key]
+        if sub.empty:
+            continue
+        delta = pivot[key] - legacy
+        better = int((delta < -0.001).sum())
+        same = int((delta.abs() <= 0.001).sum())
+        worse = int((delta > 0.001).sum())
+        is_default = key == "deconvolution"
+        lines.append(
+            f"{label} & {fmt(sub['elemental_l1_at_pct'].mean(), 3, is_default)} & "
+            f"{fmt(sub.loc[sub['dataset_kind'] == 'synthetic', 'elemental_l1_at_pct'].mean(), 3)} & "
+            f"{fmt(sub.loc[sub['dataset_kind'] == 'real', 'elemental_l1_at_pct'].mean(), 3)} & "
+            f"{fmt(sub['fabricated_at_pct'].mean(), 3)} & "
+            f"{better}/{same}/{worse} \\\\"
+        )
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{adjustbox}",
+        r"\end{table}",
+    ]
+    (TABLES / "quantification_ablation_table.tex").write_text(
+        "\n".join(lines) + "\n"
+    )
+
+
 def foreign_table() -> None:
     mb_path = ROOT / "outputs" / "benchmark_massbank" / "massbank_summary.json"
     ts_path = ROOT / "outputs" / "benchmark_tofsims" / "tofsims_results.json"
     lines = [
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Out-of-domain spectra. Left: 120 MassBank-derived",
-        r"semi-synthetic profile spectra (organic fragment chemistry, exact",
-        r"curated line lists). Right: real ToF-SIMS negative-polarity",
-        r"spectra; recall on a reference list of known inorganic ions.",
-        r"Bridge-based comparators are omitted here (in-process detectors",
-        r"only).}",
+        r"\caption{Detector-only transfer checks, not end-to-end validation.",
+        r"Left: 120 MassBank-derived spectra rendered with the synthetic APT",
+        r"peak-shape model. Right: real ToF-SIMS negative-polarity spectra;",
+        r"recall uses an incomplete reference list of known inorganic ions.",
+        r"Species assignment and composition are not scored. Bridge-based",
+        r"comparators are omitted (in-process detectors only).}",
         r"\label{tab:foreign}",
         r"\small",
         r"\begin{tabular}{lrrrr|rr}",
@@ -385,6 +452,7 @@ def main() -> None:
     detection_table(frame)
     detection_ablation_table()
     ablation_table()
+    quantification_ablation_table()
     foreign_table()
     runtime_table(frame)
     print("Tables written to", TABLES)

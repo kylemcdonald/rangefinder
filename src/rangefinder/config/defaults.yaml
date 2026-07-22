@@ -214,6 +214,22 @@ analysis:
   naive_sideband_width_bins: 2
   peak_integration_half_width_da: 0.12
   local_baseline_half_width_da: 0.3
+  # Equal-error ranging balances estimated signal excluded outside each range
+  # against background admitted inside it. "shadow" records adaptive bounds,
+  # purity, recovery, and range-placement uncertainty without changing the
+  # production area. The bundled ablation improves synthetic controls but
+  # regresses 7/10 real controls, so automatic promotion is not the default.
+  adaptive_ranging_mode: shadow
+  eer_purity_factor: 1.0
+  eer_background_exclusion_half_width_da: 0.30
+  eer_background_lower_fraction: 0.50
+  eer_snap_half_width_da: 0.05
+  eer_hybrid_min_purity: 0.50
+  eer_hybrid_min_recovery: 0.50
+  eer_hybrid_min_area_ratio: 0.25
+  eer_hybrid_max_area_ratio: 4.0
+  eer_hybrid_preserve_local_mixture: true
+  eer_hybrid_max_background_relative_mad: 1.0
   assignment_backend: joint_optimizer
   joint_species_global_enabled: true
   joint_species_global_max_rank: 4
@@ -302,6 +318,24 @@ analysis:
   # weighted composition (with per-peak renormalization); losing candidates
   # otherwise bleed a few percent of every large peak into phantom elements.
   composition_probability_floor: 0.05
+  # Post-assignment quantification. Plausible species are expanded into their
+  # full natural-isotope envelopes and connected overlap groups are fitted with
+  # a nonnegative Poisson model. The conservative identifiability, confidence,
+  # and residual gates improved mean L1 in the dedicated ablation; every output
+  # also retains atomic_percent_assignment as the pre-deconvolution baseline.
+  overlap_deconvolution_enabled: true
+  overlap_deconvolution_max_rank: 4
+  overlap_deconvolution_min_probability: 0.05
+  overlap_deconvolution_min_vote_area: 100.0
+  overlap_deconvolution_max_species: 64
+  overlap_deconvolution_require_high_confidence_anchor: true
+  overlap_deconvolution_anchor_min_probability: 0.72
+  overlap_deconvolution_max_component_species: 8
+  overlap_deconvolution_isotopologue_probability_floor: 1.0e-5
+  overlap_deconvolution_match_tolerance_scale: 1.0
+  overlap_deconvolution_min_envelope_coverage: 0.50
+  overlap_deconvolution_max_condition_number: 1.0e6
+  overlap_deconvolution_max_relative_rmse: 0.35
   # Backward elimination: elements whose presence rests only on low-probability
   # or molecular-side evidence (no atomic rank-1 anchor, no isotope-family
   # fingerprint, not user-hinted) are removed from the library and the

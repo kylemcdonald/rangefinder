@@ -18,8 +18,7 @@
 \newcommand{\da}{\,\mathrm{Da}}
 
 \title{\rf{}: automated ranging, species identification, and composition
-for time-of-flight mass spectra, benchmarked against the open-source
-atom probe ecosystem}
+for atom probe tomography}
 
 \author{Kyle McDonald}
 \date{Draft of July 21, 2026}
@@ -56,21 +55,28 @@ the same fingerprint machinery extended to molecular series --- and an
 evidence-gated assignment stage with physical charge-state constraints
 and four parsimony guards (an isotopologue-envelope veto, support-scaled
 penalties for unsupported elements, iterative element pruning, and a
-hydride-on-member guard). Because no two open tools cover the same stage,
+hydride-on-member guard), a shadow equal-error range audit, and guarded
+natural-isotope-envelope deconvolution for identifiable peak overlaps. The end-to-end model is intentionally
+APT-specific: it assumes positive field-evaporated ions, APT peak shapes
+and charge states, natural-isotope families, small inorganic molecular
+ions, and elemental atomic percent as the target quantity. Because no two
+open tools cover the same stage,
 we evaluate six of them (APAV, PyCCAPT, pyOpenMS, ms\_deisotope, APyT, and
 a na\"ive-sideband baseline) not as rival end-to-end systems but as
 ablations of individual pipeline stages, and add a dedicated detection
 ablation against the standard 1D mass-spectrum detectors APT ranging never
 adopted (CWT ridge lines, persistent homology, derivative zero-crossings).
-The evaluation spans synthetic ground-truth specimens, ten public reference
-datasets covering pure metals, steels, alloys, and a stoichiometric oxide,
-120 MassBank-derived semi-synthetic spectra, and real ToF-SIMS spectra in a
-foreign instrument format. Across composition recovery, peak detection,
-fabricated-signal suppression, and mass accuracy, \rf{} matches or
-outperforms every alternative, and it does so \emph{faster} than any of
-them --- a 7.7M-event specimen in under ten seconds. All datasets, metrics,
-and the benchmark harness are released with the code, and every number in
-this paper regenerates from two commands.
+The end-to-end evaluation spans synthetic ground-truth specimens and eleven
+public APT reference datasets covering pure metals, steels, alloys, an
+oxide, and a nitride. Separate detector-only transfer checks use 120
+MassBank-derived semi-synthetic spectra and real ToF-SIMS spectra; they do
+not validate species assignment or composition outside APT. On the
+complete-case APT benchmark, \rf{} has the lowest aggregate composition
+error and mass error while retaining 1.000 intensity-weighted synthetic-line
+recall and 0.984 precision; it processes a 7.7M-event specimen in under ten
+seconds. All datasets, metrics, and the benchmark harness are released with
+the code, and every number in this paper regenerates from the documented
+commands.
 \end{abstract}
 
 \section{Introduction}
@@ -123,8 +129,9 @@ loop to composition without a human drawing ranges. It is nonetheless
 through an interactive GUI, requires the user to supply the candidate
 element list that drives identification, and includes an explicit manual
 step to remove incorrect ion assignments. We do not benchmark it directly
-because we could not access or run it: the toolbox requires a MATLAB
-licence, a proprietary dependency that sits uneasily with the very FAIR
+because we could inspect its GPL source but could not execute the MATLAB
+implementation or its interactive workflow without a MATLAB licence. That
+proprietary dependency sits uneasily with the very FAIR
 principles --- findability, accessibility, interoperability, reusability
 \citep{wilkinson2016fair} --- that it champions, since a reader without
 MATLAB cannot execute or reproduce it. \rf{} pursues those same principles
@@ -175,7 +182,8 @@ explicit interference-aware uncertainty gates on every isotope-level
 claim. And from the reproducibility tradition
 \citep{kuhbach2021,heller2024matlab,monajem2025pyccapt} we take
 determinism: \rf{} has no interactive steps, so its operator variance is
-exactly zero, and every table in this paper regenerates from two commands.
+exactly zero, and every table in this paper regenerates from the documented
+benchmark commands.
 
 \section{The \rf{} pipeline}
 \label{sec:pipeline}
@@ -191,45 +199,51 @@ exactly zero, and every table in this paper regenerates from two commands.
     inner sep=3pt, fill=blue!6},
   arrow/.style={-{Stealth[length=2mm]}, thick},
 ]
-\node[stage] (detect) {multi-resolution detection\\ + log-peakiness rescue};
+\node[stage] (detect) {multi-resolution detection\\ + optional rescue};
 \node[stage, right=of detect] (deblend) {$t$-space mixture\\ deblending};
 \node[stage, right=of deblend] (family) {isotope-family\\ fingerprints (EMG)};
 \node[stage, right=of family] (assign) {evidence-gated\\ joint assignment};
-\node[stage, right=of assign] (out) {composition\\ + isotope audit};
+\node[stage, right=of assign] (out) {overlap deconvolution\\ + composition/audit};
 \node[guard, below=of deblend] (recal) {local recalibration\\ completion + verification};
+\node[guard, below=of family] (eer) {equal-error ranges\\ shadow audit};
 \node[guard, below=of out, xshift=-6mm] (guards) {envelope veto $\cdot$ support penalties\\ element pruning $\cdot$ probability floor};
 \draw[arrow] (detect) -- (deblend);
 \draw[arrow] (deblend) -- (family);
 \draw[arrow] (family) -- (assign);
 \draw[arrow] (assign) -- (out);
 \draw[arrow] (recal) -- (family);
+\draw[arrow] (eer) -- (out);
 \draw[arrow] (guards) -- (assign);
 \end{tikzpicture}
 \end{adjustbox}
-\caption{\rf{} stages. Raw events ($m/z$ list from
-\texttt{.pos}/\texttt{.epos} or any spectrum source) flow left to right;
-the parsimony guards (blue) are ablated individually in
+\caption{\rf{}'s APT-specific end-to-end stages. Event-level $m/z$ values
+from \texttt{.pos}/\texttt{.epos} data flow left to right; the parsimony
+guards (blue) are ablated individually in
 Table~\ref{tab:ablation}.}
 \label{fig:pipeline}
 \end{figure}
 
-\rf{} takes a raw event list --- big-endian \texttt{.pos}/\texttt{.epos},
-or any array of $m/z$ values with optional positions --- and produces
-ranged peaks, species assignments with per-candidate probabilities,
-elemental and isotopic composition tables, audited isotope-ratio claims,
-and (when positions are available) a spatial homogeneity analysis. The
-stages are summarized below; every threshold named here is a configuration
-key with the quoted default.
+\rf{} takes APT event data --- ordinarily big-endian
+\texttt{.pos}/\texttt{.epos}, represented internally by event-level $m/z$
+values and reconstructed positions --- and produces ranged peaks, species
+assignments with per-candidate probabilities, elemental and isotopic
+composition tables, audited isotope-ratio claims, and, when enabled, a
+spatial homogeneity analysis. Low-level detection routines can be adapted
+to other one-dimensional TOF event lists, but the family identification,
+assignment, composition, isotope audit, and spatial stages described here
+are APT-specific. Every threshold named below is a configuration key with
+the quoted default.
 
-\subsection{Multi-resolution detection with a log-domain rescue channel}
+\subsection{Multi-resolution detection with an optional log-domain channel}
 Peaks are detected on histograms at several bin widths simultaneously
-(0.001--0.02\,Da candidates, capped by a Freedman--Diaconis-derived
+(0.01, 0.02, and 0.05\,Da candidates, capped at 0.02\,Da after a
+Freedman--Diaconis-derived
 maximum), and the per-width detections are merged with
-prominence-weighted clustering. Two detectors run per width: a standard
-prominence detector on Savitzky--Golay-smoothed counts, and a
-\emph{log-peakiness} detector that subtracts a median-filter baseline in
-$\log_{10}$ space and scores candidates by prominence over local MAD noise
---- the channel that recovers low-amplitude peaks riding on thermal tails.
+prominence-weighted clustering. The default is a standard prominence
+detector on Savitzky--Golay-smoothed counts. An optional
+\emph{log-peakiness} channel subtracts a median-filter baseline in
+$\log_{10}$ space and scores candidates by prominence over local MAD noise;
+Table~\ref{tab:ablation} shows why it is disabled by default.
 Detections seen at only one resolution are treated with suspicion
 (shoulder suppression), one-sided tail artifacts are removed by a
 valley test against the parent peak, and every surviving center is
@@ -244,6 +258,32 @@ half of the above-baseline signal are rejected in favor of the seed peaks
 (a spike narrower than the width floor should not corrupt its neighbors),
 and fitted areas replace histogram integrals only for the peaks in the
 window.
+
+\subsection{Adaptive range audit}
+The production area for an isolated peak is the nonnegative histogram
+excess inside a symmetric window of at least 0.12\,Da half-width (capped at
+0.18\,Da), with a linear baseline interpolated from neighboring sidebands;
+accepted crowded-window fits replace these integrals. In parallel, \rf{}
+computes a clean-room equal-error ranging (EER) estimate inspired by
+Atom-Probe-Toolbox \citep{felfer_toolbox}. Between the peak apex and each
+inter-peak valley, the inferred contribution of the peak is constrained to
+decrease monotonically away from the apex. The boundary $b$ solves
+\begin{equation}
+S_{\mathrm{missed}}(b)=k B_{\mathrm{included}}(b), \qquad k=1,
+\end{equation}
+where the continuum follows the constant-TOF transformation
+$B(m)=A/\sqrt{\max(m,1\,\mathrm{Da})}$ fitted through inter-peak bins.
+Adjacent search intervals meet at their raw-count valley, so EER ranges
+cannot overlap. Each peak records both boundaries and areas, estimated
+purity, recovery, background counts, missed signal, counting uncertainty,
+and the fixed-versus-EER discrepancy as a range-placement systematic.
+
+EER is deliberately a \emph{shadow} estimate in the default pipeline. The
+implementation ablation in Table~\ref{tab:quantification_ablation} found a
+large benefit on the four synthetic spectra but material regressions on
+seven of ten real controls. The diagnostics are therefore exposed for
+falsification and future specimen-specific validation, but EER does not
+silently replace the production area.
 
 \subsection{Isotope-family fingerprints with tail-aware fits}
 For every plausible (element, charge) pair up to $4+$, \rf{} tries to
@@ -337,11 +377,39 @@ penalty unless measured abundances actually deviate from the family's
 natural pattern.
 \end{enumerate}
 
-Composition sums baseline-subtracted peak areas over assignment
-probabilities, with a probability floor (5\%) and per-peak
+The assignment-probability composition first sums baseline-subtracted peak
+areas over candidates, with a probability floor (5\%) and per-peak
 renormalization so that losing candidates cannot siphon a few percent of
-every strong peak into phantom elements. A parallel ``robust''
-composition uses only high-confidence rank-1 assignments.
+every strong peak into phantom elements. A parallel ``robust'' composition
+uses only high-confidence rank-1 assignments.
+
+\subsection{Guarded isotope-envelope overlap deconvolution}
+Final quantification treats assignment and abundance estimation as separate
+questions. Species with a high-confidence rank-1 anchor are expanded into
+their enumerated natural-isotope envelopes, discarding components below
+probability $10^{-5}$. A bipartite graph connects each
+species to every detected peak that can contain one of its isotopologues;
+connected components containing a shared peak are fitted independently by
+the nonnegative Poisson model
+\begin{equation}
+\hat{\boldsymbol a}=\arg\min_{\boldsymbol a\geq0}
+\sum_i\left[(F\boldsymbol a)_i-y_i\log(F\boldsymbol a)_i\right],
+\end{equation}
+where $F$ contains normalized natural-isotope fractions and $y_i$ is the
+measured peak area. This is a clean-room adaptation of the constrained
+overlap-quantification idea in Atom-Probe-Toolbox and AtomProbeLab
+\citep{felfer_toolbox,london2019}, not copied code.
+
+The fit is allowed to modify a peak allocation only when its envelope matrix
+has at least as many measured peaks as species, full column rank, condition
+number below $10^6$, at least 50\% observed envelope coverage for every
+species, no more than eight coupled species, optimizer convergence, and
+relative residual below 0.35. Otherwise the assignment probabilities pass
+through unchanged. Accepted components report rank, condition number,
+Poisson deviance, residual, fitted counts, and Fisher-information counting
+uncertainties. The output tables retain the assignment-only composition in
+\texttt{atomic\_percent\_assignment} beside the promoted deconvolved value,
+so the correction is always reversible and auditable.
 
 \subsection{Isotope audit and anomaly gating}
 Every isotope-ratio claim is re-derived from raw events by a dual-shape
@@ -392,14 +460,17 @@ so its nominal Fe:O${=}1{:}1$ label would have been false ground truth ---
 a reminder that a dataset's stated chemistry must be verified against its
 spectrum before it is trusted as truth.
 
-\textbf{Out-of-domain spectra.} 120 MassBank records \citep{massbank2024}
---- curated, expert-annotated centroid lists for known organic compounds
---- rendered into semi-synthetic profile spectra with the same peak-shape
-model as the synthetic APT data; and two real ToF-SIMS spectra in a
-channel/mz/intensity text format \citep{zenodo15446699}, where recall is
-scored on a reference list of known inorganic ions. Neither resembles APT
-chemistry; both test whether the detector generalizes beyond the data the
-pipeline was developed on.
+\textbf{Detector-only transfer data.} 120 MassBank records
+\citep{massbank2024} --- curated, expert-annotated centroid lists for known
+organic compounds --- are rendered into semi-synthetic event spectra with
+the same peak-shape model as the synthetic APT data. Two real ToF-SIMS
+spectra in a channel/mz/intensity text format \citep{zenodo15446699} are
+converted to pseudo-events, with recall scored on an incomplete reference
+list of known inorganic ions. For both studies we disable APT family hints
+and element pruning, ignore assignment and composition outputs, and score
+only detected peak positions. These checks probe whether the detector can
+transfer to foreign line patterns and formats; they are not evidence that
+the end-to-end pipeline generalizes beyond APT.
 
 \subsection{Comparators as stage ablations}
 \label{sec:comparators}
@@ -446,7 +517,7 @@ correct count is zero). Cost: wall-clock runtime, single core.
 \label{sec:results}
 
 Tables~\ref{tab:composition}--\ref{tab:foreign} are generated directly
-from \texttt{outputs/benchmark/} by \texttt{scripts/build\_paper\_tables.py}.
+from the benchmark outputs by the bundled table-building script.
 
 \input{tables/composition_table}
 
@@ -456,16 +527,24 @@ from \texttt{outputs/benchmark/} by \texttt{scripts/build\_paper\_tables.py}.
 
 \input{tables/ablation_table}
 
+\input{tables/quantification_ablation_table}
+
 \input{tables/foreign_table}
 
 \input{tables/runtime_table}
 
 \subsection{Reading the results}
+Table~\ref{tab:foreign} must be read narrowly. It shows that the detector
+retains high intensity-weighted recall on APT-shaped MassBank renderings and
+recovers every ion in the limited ToF-SIMS reference list. It does not test
+negative-ion annotation, fragment chemistry, or non-APT composition, and
+the ToF-SIMS list is too incomplete to establish detector precision.
+
 Aggregated over the eleven datasets every method completed, \rf{}'s mean
-composition error is 3.7\,at.\% L1 --- $2.4\times$ better than the best
-comparator (PyCCAPT at 8.9, itself running \rf{}'s assignment stage) and
-$8\times$ better than the independent quantifiers (APyT 27.6, APAV
-30.3). The pattern behind the mean matters more than the mean: on clean
+composition error is 3.62\,at.\% L1 --- $2.5\times$ better than the best
+comparator (PyCCAPT at 9.17, itself running \rf{}'s assignment stage) and
+more than $7\times$ better than the independent quantifiers (APyT 27.56,
+APAV 30.20). The pattern behind the mean matters more than the mean: on clean
 synthetic specimens all reasonable detectors agree to within a fraction
 of an at.\% (differences there are noise), and the field separates
 exactly where automated analysis is hard --- imperfectly calibrated real
@@ -475,11 +554,30 @@ $\sim$92\,at.\% of non-Li content while \rf{} reports lithium exactly;
 on FeO w\"ustite, whose mass scale wobbles by $+40$--$80$\,mDa at high
 $m/z$, \rf{} lands at the literature-typical APT oxide composition
 (Fe$_{57}$O$_{43}$, the residual being the field's known oxygen deficit)
-while every other method reports between 48 and 140 L1 --- APAV and APyT
+while every other method reports between 44 and 140 L1 --- APAV and APyT
 assign the majority of the specimen to elements it does not contain.
 \rf{} also correctly identifies the Ni-silicide contamination in APAV's
 own Si example dataset, which the dataset's shipped range file does not
 range.
+
+\subsection{Quantification ablation}
+Table~\ref{tab:quantification_ablation} is the promotion test for the two
+quantification changes. It holds peak detection and candidate generation
+fixed and crosses fixed versus EER areas with assignment-probability versus
+envelope-deconvolved allocation. Full EER lowers mean synthetic L1 from
+0.768 to 0.182 (0.093 with deconvolution), but raises mean real-control L1
+from 11.327 to 14.398: five controls improve, two are unchanged, and seven
+regress, with the largest failures on FeO, the V--Al nitride, and two H/D
+steels. That is evidence for reporting EER as an uncertainty channel, not
+for making it the answer.
+
+The guarded overlap solver is much more conservative. Nine of fourteen
+scored controls are unchanged to 0.001\,at.\%, two improve, and three regress
+by at most 0.303\,at.\% L1; mean L1 falls from 8.310 to 8.262. The largest
+gain is the synthetic Al--Mg--Si coincidence (0.448 to 0.107), where the
+isotope ladders identify the AlH$^+$/Si$^+$ allocation. The gain is small
+enough that we retain the pre-deconvolution composition beside every result
+and present this as a guarded correction, not a solved overlap problem.
 
 Detection (Table~\ref{tab:detection}) shows the same shape: recall is
 saturated for everyone on synthetic lines; the separators are precision
@@ -560,12 +658,13 @@ And on the ODS steel, APyT's model fit beats \rf{} by 0.7 L1 against a
 range-file reference that does not range the residual hydrogen \rf{}
 reports; we note the gap rather than tune it away.
 
-Finally, accuracy did not cost speed (Table~\ref{tab:runtime}). \rf{}
-processes a 1.5M-event synthetic specimen in a median 3.3\,s and the
-7.7M-event pure-W dataset in 9.7\,s single-core, making it the fastest of
-the in-process methods --- below pyOpenMS (5.5\,s / 10.5\,s) despite doing
-strictly more work (species identification, molecular-family recovery, and
-composition rather than centroiding alone). The gain came from removing two
+Finally, the added audits remain inexpensive (Table~\ref{tab:runtime}). \rf{}
+processes a 1.5M-event synthetic specimen in a median 3.4\,s and the
+7.7M-event pure-W dataset in 9.7\,s single-core. Narrower detector or
+quantifier stages such as pyOpenMS, APAV, and the na\"ive baseline can be
+faster, but they do not perform the full unsupervised identification,
+molecular-family recovery, overlap audit, and isotope analysis. The practical
+gain came from removing two
 avoidable costs in the assignment stage: the per-candidate envelope score
 over the ${\sim}$400k-entry species library was vectorized out of a
 row-wise loop, and the combinatorial library, which is identical across the
@@ -575,13 +674,27 @@ any reported composition; both are pure implementation.
 \section{Threats to validity}
 \label{sec:threats}
 
-\textbf{Development-set contamination.} The synthetic generator and the
-five FAIRmat controls were used during \rf{}'s development; scores on
-them are optimistic in the way any tool's self-reported scores are. Our
-mitigations: the H/D steel, FeO, Li, MassBank, and ToF-SIMS datasets were
-added \emph{after} the pipeline design was frozen and no thresholds were
-tuned on them; and the entire harness is re-runnable by anyone on new
-data with two commands.
+\textbf{Scope and transferability.} \rf{} is an end-to-end APT ranging
+system, not a general-purpose mass-spectrometry or spectroscopy framework.
+Its current data model expects event-level $m/z$ and reconstructed
+coordinates; its fitter assumes approximately constant width in
+$t=\sqrt{m/z}$ and APT-like one-sided evaporation tails; and its assigner
+searches positive atomic and small molecular ions using natural-isotope
+patterns, APT charge-state priors, and field-evaporation-specific penalties.
+It does not model negative-ion assignment, adduct and fragment chemistry,
+tandem MS, retention time or ion mobility, arbitrary profile/centroid
+inputs, or non-mass-spectrometry axes. The MassBank and ToF-SIMS experiments
+exercise only the detector after adaptation, so their results must not be
+read as end-to-end validation outside APT.
+
+\textbf{Development-set contamination.} The controls in this paper were
+used to decide whether EER and overlap deconvolution should be promoted, so
+the ablation is development evidence rather than a held-out estimate. This
+is especially important for the four synthetic spectra, whose background
+model matches the model used by EER. We mitigate the risk by reporting all
+per-dataset directions, retaining the legacy composition beside the new
+one, refusing to promote EER after its real-data failures, and releasing the
+entire harness for genuinely independent data.
 
 \textbf{Shared assignment for detector-only tools.} Comparator
 composition scores for PyCCAPT, pyOpenMS, ms\_deisotope, and the na\"ive
@@ -621,13 +734,15 @@ inspectable configuration rather than trained weights, and it ships its own
 falsification harness.
 
 \section{Availability and reproduction}
-\rf{} is pure Python (NumPy/SciPy/pandas), MIT-licensed, with the
+\rf{} is an APT-specific, pure Python (NumPy/SciPy/pandas), MIT-licensed
+pipeline with the
 benchmark harness, synthetic generator, control-download script, and
-this paper's table generator included. Reproduction:
-\texttt{scripts/download\_benchmark\_controls.sh} then
-\texttt{scripts/run\_benchmark.py}; the MassBank, ToF-SIMS, and ablation
-studies each have a dedicated script. Comparator versions and
-environments are pinned in the repository.
+this paper's table generator included. Reproduce the main APT benchmark by
+running \path{scripts/download_benchmark_controls.sh}, followed by
+\path{scripts/run_benchmark.py}. The MassBank, ToF-SIMS, and ablation studies
+each have a dedicated script; the quantification promotion test is
+\path{scripts/run_quantification_ablation.py}. Comparator versions and environments are
+pinned in the repository.
 
 \begin{thebibliography}{99}
 \bibitem[APAV(2023)]{smith2023apav} J.~D.~Smith and M.~L.~Young,
@@ -655,9 +770,7 @@ V.~Dalbauer, P.~Felfer, ``A MATLAB toolbox for findable, accessible,
 interoperable, and reusable atom probe data science,'' \emph{Microsc.
 Microanal.} \textbf{30}(6), 1138--1151 (2024).
 \bibitem[Felfer et al.(2026)]{felfer_toolbox} P.~Felfer et al.,
-``Atom-Probe-Toolbox,'' GPLv3 software repository, including
-\texttt{massSpecFindPeaks}, \texttt{ionMatchPattern}, and
-\texttt{rangeAutoEER},
+``Atom-Probe-Toolbox,'' GPLv3 software repository,
 \url{https://github.com/peterfelfer/Atom-Probe-Toolbox} (accessed 2026).
 \bibitem[London(2019)]{london2019} A.~J.~London, ``Quantifying
 uncertainty from mass-peak overlaps in atom probe microscopy,''

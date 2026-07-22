@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every detector on real ToF-SIMS spectra (foreign-format robustness).
+"""Run every detector on real ToF-SIMS spectra (detector-only transfer check).
 
 The Zenodo 15446699 spectra (CC-BY) are genuine time-of-flight instrument
 output in a channel/mz/intensity text format — no .pos, no APT physics. The
@@ -8,6 +8,8 @@ exact masses (H, C, CH, O, OH, CN, Cl, CNO, S, PO2, PO3, SO3, ...). We score
 each pipeline's detector by recall on that known-ion list and report peak
 counts and runtime. Ground truth here is a curated reference list, not a
 complete labeling, so in-list fraction is reported as coverage context only.
+This does not validate Rangefinder's positive-ion APT assignment or composition
+model on SIMS data.
 """
 from __future__ import annotations
 
@@ -80,6 +82,8 @@ def main() -> None:
         "pyopenms": run_pyopenms_pipeline,
     }
     config = copy.deepcopy(load_config(default_config_path()))
+    # This is a detector transfer check. Rangefinder's assignment model is for
+    # positive-ion APT data and is not meaningful for these negative SIMS ions.
     config["analysis"]["segmentation_enabled"] = False
     config["analysis"]["custom_family_hint_enabled"] = False
     config["analysis"]["element_pruning_enabled"] = False
@@ -92,6 +96,8 @@ def main() -> None:
         mz_events = load_tofsims_events(path, max_mz=200.0, max_events=3_000_000, rng=rng)
         print(f"{path.name}: {mz_events.size} pseudo-events")
         n = mz_events.size
+        # PosSampleData currently requires APT coordinates. Random placeholders
+        # satisfy that container; spatial analysis is disabled and never scored.
         radius = 30.0 * np.sqrt(rng.random(n))
         angle = rng.uniform(0, 2 * np.pi, n)
         slug = slugify(path.stem)

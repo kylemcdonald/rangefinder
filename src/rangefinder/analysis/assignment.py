@@ -8,6 +8,7 @@ import pandas as pd
 from scipy.optimize import nnls
 
 from rangefinder.analysis.common import assignment_softmax, build_species_library, top_assignment_table
+from rangefinder.analysis.overlap_deconvolution import deconvolve_peak_overlaps
 from rangefinder.references.isotopes import isotope_table, natural_abundance_by_element
 
 
@@ -1944,7 +1945,9 @@ def composition_tables(
         ranked.loc[assigned_mask, "probability"] = ranked.loc[
             assigned_mask, "probability"
         ] / probability_sums.clip(lower=1.0e-9)
-    ranked["weighted_area"] = ranked["peak_area"] * ranked["probability"]
+    ranked["assignment_weighted_area"] = ranked["peak_area"] * ranked["probability"]
+    ranked, overlap_diagnostics = deconvolve_peak_overlaps(peaks, ranked, config=config)
+    ranked["weighted_area"] = ranked["peak_area"] * ranked["quantification_probability"]
     top = ranked[ranked["rank"] == 1].copy()
     top["robust_area"] = np.where(top["confidence"] == "high", top["peak_area"], 0.0)
     ambiguous_peaks = top[top["confidence"] == "ambiguous"][
@@ -1955,6 +1958,8 @@ def composition_tables(
             "probability",
             "candidate_count",
             "mass_error_da",
+            "quantification_probability",
+            "quantification_method",
         ]
     ].copy()
 
@@ -1971,6 +1976,7 @@ def composition_tables(
                 "category": row["category"],
                 "charge": row["charge"],
                 "weighted_counts": row["weighted_area"],
+                "assignment_weighted_counts": row["assignment_weighted_area"],
                 "robust_counts": row["peak_area"] if row["rank"] == 1 and row["confidence"] == "high" else 0.0,
             }
         )
@@ -1979,6 +1985,7 @@ def composition_tables(
                 {
                     "element": element,
                     "weighted_counts": row["weighted_area"] * count,
+                    "assignment_weighted_counts": row["assignment_weighted_area"] * count,
                     "robust_counts": (
                         row["peak_area"] * count
                         if row["rank"] == 1 and row["confidence"] == "high"
@@ -1993,7 +2000,7 @@ def composition_tables(
                     "isotope_label": isotope,
                     "element": "".join(filter(str.isalpha, isotope)),
                     "charge": int(row["charge"]) if pd.notna(row["charge"]) else np.nan,
-                    "weighted_counts": row["peak_area"] * row["probability"] * count,
+                    "weighted_counts": row["peak_area"] * row["quantification_probability"] * count,
                     "robust_counts": row["peak_area"] * count if row["confidence"] == "high" else 0.0,
                 }
             )
@@ -2012,6 +2019,9 @@ def composition_tables(
     species["atomic_percent_robust"] = 100.0 * species["robust_counts"] / max(
         float(species["robust_counts"].sum()), 1.0
     )
+    species["atomic_percent_assignment"] = 100.0 * species[
+        "assignment_weighted_counts"
+    ] / max(float(species["assignment_weighted_counts"].sum()), 1.0)
     elements = element_frame.groupby(["element"], as_index=False).sum(numeric_only=True)
     elements["atomic_percent_weighted"] = 100.0 * elements["weighted_counts"] / max(
         float(elements["weighted_counts"].sum()), 1.0
@@ -2019,6 +2029,11 @@ def composition_tables(
     elements["atomic_percent_robust"] = 100.0 * elements["robust_counts"] / max(
         float(elements["robust_counts"].sum()), 1.0
     )
+    elements["atomic_percent_assignment"] = 100.0 * elements[
+        "assignment_weighted_counts"
+    ] / max(float(elements["assignment_weighted_counts"].sum()), 1.0)
+    species.attrs["overlap_deconvolution"] = overlap_diagnostics
+    elements.attrs["overlap_deconvolution"] = overlap_diagnostics
     if atomic_isotope_frame.empty:
         isotopes = pd.DataFrame()
     else:

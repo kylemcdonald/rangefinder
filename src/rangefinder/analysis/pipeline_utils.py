@@ -114,6 +114,7 @@ def finalize_method_analysis(
         assignments,
         config=config,
     )
+    overlap_diagnostics = species.attrs.get("overlap_deconvolution", {})
     isotope_audit = audit_isotope_families(
         mz_values=raw_mz,
         peaks=peak_summary,
@@ -123,7 +124,10 @@ def finalize_method_analysis(
     )
     if not anomalies.empty:
         anomalies = reconcile_isotope_anomalies(anomalies, isotope_audit, config=config)
-    diagnostics = diagnostics | {"mass_scale": mass_scale_diagnostics(assignments)}
+    diagnostics = diagnostics | {
+        "mass_scale": mass_scale_diagnostics(assignments),
+        "overlap_deconvolution": overlap_diagnostics,
+    }
     if positions is not None:
         x_nm, y_nm, z_nm = positions
         spatial_frame, spatial_summary = spatial_composition_stability(

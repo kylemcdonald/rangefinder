@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Peak-detection benchmark on MassBank-derived semi-synthetic spectra.
+"""Detector-only transfer check on MassBank-derived semi-synthetic spectra.
 
 MassBank records carry curated, expert-annotated centroid peak lists for known
 compounds (CC-BY). We render each peak list into a realistic profile spectrum
@@ -7,7 +7,9 @@ compounds (CC-BY). We render each peak list into a realistic profile spectrum
 APT synthesis model) at a chosen mass resolving power, then ask every
 pipeline's detector to recover the known lines. This tests the detectors on
 line patterns from an entirely different chemistry than APT — fragment ions
-of organic molecules — with exact ground truth.
+of organic molecules — with exact ground truth. It does not test Rangefinder's
+species assignment or composition outside APT, and the rendering deliberately
+retains the APT synthetic peak-shape model.
 
 Usage: .venv/bin/python scripts/run_massbank_benchmark.py \
           [--records 150] [--mrp 800] [--methods custom,naive,pyccapt,pyopenms]
@@ -109,6 +111,8 @@ def render_events(record: dict, *, mrp: float, total_ions: int, rng: np.random.G
     chunks.append(np.square(t_bg))
     mz_events = np.concatenate(chunks).astype(np.float32)
     n = mz_events.size
+    # PosSampleData currently requires APT coordinates. These placeholders are
+    # ignored because spatial analysis is disabled; only detected m/z is scored.
     radius = 30.0 * np.sqrt(rng.random(n))
     angle = rng.uniform(0, 2 * np.pi, n)
     return (

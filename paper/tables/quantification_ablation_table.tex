@@ -1,0 +1,24 @@
+\begin{table}[t]
+\centering
+\caption{Quantification ablation over all 14 controls with composition
+truth. Equal-error ranging (EER) substantially improves the four
+synthetic spectra but regresses seven of ten real controls, so it is
+retained as a shadow estimate rather than promoted. The guarded
+isotope-envelope solver changes only identifiable connected overlap
+groups and is the default. Better/same/worse counts use a 0.001\,at.\%
+tolerance relative to the fixed-range, assignment-probability baseline.}
+\label{tab:quantification_ablation}
+\small
+\begin{adjustbox}{max width=\textwidth}
+\begin{tabular}{lrrrrr}
+\toprule
+Variant & All L1 & Synthetic L1 & Real L1 & Mean fab. & Better/same/worse \\
+\midrule
+Fixed ranges + assignment probabilities & 8.310 & 0.768 & 11.327 & 0.983 & 0/14/0 \\
++ guarded overlap deconvolution (default) & \textbf{8.262} & 0.682 & 11.294 & 0.992 & 2/9/3 \\
++ full equal-error ranges (not promoted) & 10.336 & 0.182 & 14.398 & 1.081 & 5/2/7 \\
+Full EER + overlap deconvolution (not promoted) & 10.306 & 0.093 & 14.392 & 1.081 & 5/2/7 \\
+\bottomrule
+\end{tabular}
+\end{adjustbox}
+\end{table}

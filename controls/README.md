@@ -146,11 +146,16 @@ snapshots in `tmp/downloads/zenodo_<record>.json`.
   unranged peak at the 55-position, so a Fe:O=1:1 label would be false truth.
 - **ToF-SIMS spectra** (Zenodo 15446699, two ~19 MB `.txt`,
   channel/m-z/intensity): real non-APT time-of-flight spectra used for
-  foreign-format detector robustness (known inorganic ions in the
-  negative-polarity TSB spectrum act as a reference line list).
+  a detector-only transfer check (known inorganic ions in the
+  negative-polarity TSB spectrum act as an incomplete reference line list).
 - **MassBank 2024.11** (Zenodo 14221628, zip in `tmp/downloads/`): curated
   centroid peak lists for known compounds; rendered into semi-synthetic
   profile spectra by `scripts/run_massbank_benchmark.py`.
+
+The ToF-SIMS and MassBank controls are detector-only transfer checks. They do
+not validate Rangefinder's APT-specific species assignment or composition on
+non-APT data; the adapters convert foreign inputs to event lists and disable
+APT family-assignment features.
 
 **5. Mo-Hf alloy (Montanuniversitaet Leoben, Leitner)**
 - `control_MoHf_leitner_R21_08680.pos` (73.3 MB, 4,583,568 ions) + `.rrng`
