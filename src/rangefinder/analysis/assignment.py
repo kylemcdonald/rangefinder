@@ -1824,15 +1824,23 @@ def _anchored_elements(
     *,
     config: dict,
 ) -> set[str]:
-    """Elements with independent evidence: an atomic rank-1 assignment at
-    decent probability, a confirmed isotope-family fingerprint, or a user
-    hint. Molecular species can then vouch for their partners, but only from
-    already-anchored ground (a confident SiO+ anchors O when Si is anchored;
-    an exotic N2Ni2+ anchors nothing)."""
+    """Elements with independent evidence: a high-confidence atomic rank-1
+    assignment, repeated ambiguous atomic matches, a confirmed isotope-family
+    fingerprint, or a user hint. Molecular species can then vouch for their
+    partners, but only from already-anchored ground (a confident SiO+ anchors O
+    when Si is anchored; an exotic N2Ni2+ anchors nothing).
+
+    Requiring repetition for ambiguous matches prevents circular evidence: one
+    mass coincidence cannot introduce an element and then use the resulting
+    element prior to make itself look certain on the next assignment pass.
+    """
     analysis_cfg = config["analysis"]
     anchor_min_probability = float(analysis_cfg.get("element_pruning_anchor_min_probability", 0.35))
     molecular_anchor_min_probability = float(
         analysis_cfg.get("element_pruning_molecular_anchor_min_probability", 0.6)
+    )
+    ambiguous_min_peaks = int(
+        analysis_cfg.get("element_pruning_ambiguous_min_peaks", 2)
     )
     anchored: set[str] = set(_hinted_elements_from_peaks(peaks, config=config))
     if "family_hint_element" in peaks.columns:
@@ -1844,12 +1852,26 @@ def _anchored_elements(
     rank1 = assignments[
         (assignments["rank"] == 1) & (assignments["species_label"] != "unassigned")
     ]
+    ambiguous_atomic_peaks: defaultdict[str, set[str]] = defaultdict(set)
     for _, row in rank1.iterrows():
         counts = row.get("element_counts")
         if not isinstance(counts, dict) or not counts:
             continue
-        if str(row.get("category", "")) == "atomic" and float(row.get("probability", 0.0)) >= anchor_min_probability:
-            anchored.update(str(element) for element in counts)
+        if str(row.get("category", "")) != "atomic":
+            continue
+        if float(row.get("probability", 0.0)) < anchor_min_probability:
+            continue
+        elements = {str(element) for element in counts}
+        if str(row.get("confidence", "")) == "high":
+            anchored |= elements
+            continue
+        for element in elements:
+            ambiguous_atomic_peaks[element].add(str(row["peak_id"]))
+    anchored |= {
+        element
+        for element, peak_ids in ambiguous_atomic_peaks.items()
+        if len(peak_ids) >= ambiguous_min_peaks
+    }
     # Molecular vouching, iterated to fixpoint (an anchored partner chain).
     for _ in range(3):
         added = False

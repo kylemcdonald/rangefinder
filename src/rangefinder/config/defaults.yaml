@@ -344,6 +344,9 @@ analysis:
   element_pruning_enabled: true
   element_pruning_max_rounds: 2
   element_pruning_anchor_min_probability: 0.35
+  # One ambiguous atomic peak is a hypothesis, not independent evidence for
+  # introducing that element into the next assignment round.
+  element_pruning_ambiguous_min_peaks: 2
   element_pruning_molecular_anchor_min_probability: 0.6
   ambiguous_score_delta: 0.35
   high_confidence_min_probability: 0.72

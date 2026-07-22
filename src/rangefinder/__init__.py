@@ -22,7 +22,7 @@ __all__ = [
     "load_default_config",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def default_config_path() -> Path:
