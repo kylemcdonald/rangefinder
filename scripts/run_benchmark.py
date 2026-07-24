@@ -33,6 +33,7 @@ from rangefinder import default_config_path  # noqa: E402
 from rangefinder.analysis.custom_pipeline import run_custom_pipeline  # noqa: E402
 from rangefinder.analysis.naive_pipeline import run_naive_pipeline  # noqa: E402
 from rangefinder.benchmark.metrics import (  # noqa: E402
+    assignment_metrics_vs_ranges,
     composition_metrics,
     peak_metrics_vs_lines,
     peak_metrics_vs_ranges,
@@ -181,6 +182,12 @@ def run_one(
         )
     if dataset.ranges is not None and not dataset.ranges.empty:
         result |= peak_metrics_vs_ranges(detected_mz, dataset.ranges, dataset.arrays[3])
+        result |= assignment_metrics_vs_ranges(
+            artifacts.peaks,
+            artifacts.assignments,
+            dataset.ranges,
+            dataset.arrays[3],
+        )
     result |= _isotope_scores(artifacts)
     return result
 
@@ -191,9 +198,26 @@ def main() -> None:
     parser.add_argument("--methods", type=str, default=",".join(ALL_METHODS))
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs" / "benchmark")
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="override an analysis config value for a reproducible experiment",
+    )
     args = parser.parse_args()
 
     config = load_config(default_config_path())
+    if args.set:
+        import yaml
+
+        for item in args.set:
+            name, separator, raw_value = item.partition("=")
+            if not separator:
+                parser.error(f"--set expects NAME=VALUE, got {item!r}")
+            if name not in config["analysis"]:
+                parser.error(f"unknown analysis setting: {name}")
+            config["analysis"][name] = yaml.safe_load(raw_value)
     paths = ProjectPaths.from_root(ROOT)
     controls_dir = ROOT / "controls"
     output_root = args.output_dir

@@ -37,6 +37,45 @@ def _normalize_score_map(scores: dict[object, float]) -> dict[object, float]:
     return {key: float(value) / maximum for key, value in scores.items()}
 
 
+def robust_family_observation(
+    observed: np.ndarray,
+    expected: np.ndarray,
+    *,
+    min_observed_members: int = 4,
+    interference_ratio: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Return interference-capped counts, fractions, mask, and family scale.
+
+    A strong positive overlap is not evidence against the isotope family. It
+    is capped only when four or more family members establish a robust scale;
+    missing and downward members are deliberately left as penalties.
+    """
+    observed_values = np.where(
+        np.isfinite(np.asarray(observed, dtype=np.float64)),
+        np.maximum(np.asarray(observed, dtype=np.float64), 0.0),
+        0.0,
+    )
+    expected_values = np.where(
+        np.isfinite(np.asarray(expected, dtype=np.float64)),
+        np.maximum(np.asarray(expected, dtype=np.float64), 0.0),
+        0.0,
+    )
+    valid = (observed_values > 0.0) & (expected_values > 0.0)
+    ratios = observed_values[valid] / expected_values[valid]
+    scale = float(np.median(ratios)) if ratios.size else 0.0
+    interference = np.zeros(observed_values.shape, dtype=bool)
+    adjusted = observed_values.copy()
+    if ratios.size >= int(min_observed_members) and scale > 0.0:
+        interference = (
+            (expected_values > 0.0)
+            & ((observed_values / np.maximum(expected_values, 1.0e-300))
+               > scale * float(interference_ratio))
+        )
+        adjusted[interference] = scale * expected_values[interference]
+    fractions = adjusted / max(float(adjusted.sum()), 1.0e-12)
+    return adjusted, fractions, interference, scale
+
+
 def _blend_support_maps(
     base_support: dict[object, float],
     pass_support: dict[object, float],
@@ -102,7 +141,9 @@ def _atomic_family_support_from_peaks(
             if observed_array.sum() <= 0.0:
                 scores[(str(symbol), int(charge))] = 0.05
                 continue
-            observed_fraction = observed_array / observed_array.sum()
+            _, observed_fraction, _, _ = robust_family_observation(
+                observed_array, expected_prob
+            )
             expected_fraction = expected_prob / max(expected_prob.sum(), 1.0e-12)
             l1_distance = float(np.abs(observed_fraction - expected_fraction).sum())
             completeness = float(np.count_nonzero(observed_array > 0.0)) / max(float(family.shape[0]), 1.0)
@@ -195,7 +236,9 @@ def atomic_family_consistency_scores(peaks: pd.DataFrame, species_library: pd.Da
         if observed_array.sum() <= 0 or expected_array.sum() <= 0:
             family_score = float(analysis_cfg["family_missing_score"])
         else:
-            observed_fraction = observed_array / observed_array.sum()
+            _, observed_fraction, _, _ = robust_family_observation(
+                observed_array, expected_array
+            )
             expected_fraction = expected_array / expected_array.sum()
             l1_distance = float(np.abs(observed_fraction - expected_fraction).sum())
             completeness = float(np.count_nonzero(observed_array > 0.0)) / max(float(group.shape[0]), 1.0)
@@ -272,10 +315,68 @@ def _coerce_family_hint_candidates(value: object) -> list[dict[str, object]]:
     return []
 
 
+def _coerce_molecular_family_candidates(value: object) -> list[dict[str, object]]:
+    """Return detector molecular-family alternatives from memory or CSV."""
+    return _coerce_family_hint_candidates(value)
+
+
+def _normalized_formula_counts(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict) or not value:
+        return None
+    normalized = {
+        str(element): int(count)
+        for element, count in value.items()
+        if int(count) > 0
+    }
+    return normalized or None
+
+
+def _molecular_candidate_matches(
+    row: pd.Series,
+    candidate: dict[str, object],
+) -> bool:
+    formula = _normalized_formula_counts(candidate.get("formula"))
+    counts = _normalized_formula_counts(row.get("element_counts"))
+    charge = candidate.get("charge")
+    return bool(
+        formula is not None
+        and counts == formula
+        and charge is not None
+        and pd.notna(charge)
+        and int(row.get("charge", 0)) == int(charge)
+    )
+
+
+def _molecular_candidate_strength(
+    candidate: dict[str, object],
+    *,
+    min_matches: int,
+) -> float:
+    coherence = float(candidate.get("coherence", 1.0) or 0.0)
+    effective_matches = candidate.get(
+        "effective_match_count",
+        candidate.get("match_count", min_matches),
+    )
+    if effective_matches is None or pd.isna(effective_matches):
+        effective_matches = min_matches
+    member_confidence = candidate.get("member_confidence", 1.0)
+    if member_confidence is None or pd.isna(member_confidence):
+        member_confidence = 1.0
+    return float(
+        np.clip(
+            coherence * min(float(effective_matches) / max(min_matches, 1), 1.0),
+            0.0,
+            1.0,
+        )
+        * np.clip(float(member_confidence), 0.0, 1.0)
+    )
+
+
 def _family_hint_candidate_support(
     match: pd.Series,
     *,
     family_hint_candidates: list[dict[str, object]],
+    score_saturation: float = 0.0,
 ) -> float:
     if not family_hint_candidates:
         return 0.0
@@ -293,7 +394,13 @@ def _family_hint_candidate_support(
         )
         if match_score <= 0.0:
             continue
-        best_support = max(best_support, float(candidate.get("score", 0.0) or 0.0) * match_score)
+        raw_score = float(candidate.get("score", 0.0) or 0.0)
+        bounded_score = (
+            raw_score / (raw_score + score_saturation)
+            if score_saturation > 0.0 and raw_score > 0.0
+            else raw_score
+        )
+        best_support = max(best_support, bounded_score * match_score)
     return float(best_support)
 
 
@@ -509,6 +616,23 @@ def _family_template_matrix(window_peaks: pd.DataFrame, family_keys: list[tuple[
     if not columns:
         return np.zeros((window_peaks.shape[0], 0), dtype=np.float64), []
     return np.column_stack(columns), kept_keys
+
+
+def _ambiguous_template_columns(
+    design_matrix: np.ndarray,
+    *,
+    max_correlation: float,
+) -> np.ndarray:
+    if design_matrix.ndim != 2 or design_matrix.shape[1] < 2:
+        return np.zeros(
+            design_matrix.shape[1] if design_matrix.ndim == 2 else 0,
+            dtype=bool,
+        )
+    template_norms = np.linalg.norm(design_matrix, axis=0)
+    normalized_templates = design_matrix / np.maximum(template_norms, 1.0e-12)
+    correlations = normalized_templates.T @ normalized_templates
+    np.fill_diagonal(correlations, 0.0)
+    return (correlations > float(max_correlation)).any(axis=1)
 
 
 def _select_joint_species_labels(
@@ -744,6 +868,13 @@ def _apply_local_family_fit(
         design_matrix, kept_families = _family_template_matrix(window_peaks, family_keys, config=config)
         if design_matrix.shape[1] < 2:
             continue
+        max_template_correlation = float(
+            analysis_cfg.get("local_fit_max_template_correlation", 0.9995)
+        )
+        ambiguous_families = _ambiguous_template_columns(
+            design_matrix,
+            max_correlation=max_template_correlation,
+        )
         observed = window_peaks["integrated_area"].to_numpy(dtype=np.float64)
         if not np.isfinite(observed).all() or observed.sum() <= 0.0:
             continue
@@ -755,6 +886,12 @@ def _apply_local_family_fit(
             coverage = float(np.clip(predicted[peak_pos] / max(observed[peak_pos], 1.0), 0.0, 1.0))
             for family_pos, family_key in enumerate(kept_families):
                 contribution = float(np.clip(fitted[peak_pos, family_pos] / max(observed[peak_pos], 1.0), 0.0, 1.0))
+                if bool(ambiguous_families[family_pos]):
+                    # The data cannot distinguish this template from another
+                    # family in the same window. Keep the shared fit for
+                    # coverage, but do not turn an arbitrary NNLS split into
+                    # candidate-specific evidence.
+                    contribution = 0.0
                 family_support[(peak_id, family_key)] = {
                     "score": contribution * coverage,
                     "coverage": coverage,
@@ -890,9 +1027,17 @@ def _average_element_support_from_row(
     element_support: dict[str, float],
 ) -> float:
     symbols = row.get("symbols")
-    if not isinstance(symbols, list) or not symbols:
+    if isinstance(symbols, list) and symbols:
+        elements = [str(symbol) for symbol in symbols]
+    else:
+        # Assignment output rows carry element_counts rather than the species
+        # library's symbols list. Falling through to zero silently disabled
+        # the joint optimizer's global element term in every real run.
+        counts = row.get("element_counts")
+        elements = [str(element) for element in counts] if isinstance(counts, dict) else []
+    if not elements:
         return 0.0
-    return float(np.mean([float(element_support.get(str(symbol), 0.0)) for symbol in symbols]))
+    return float(np.mean([float(element_support.get(element, 0.0)) for element in elements]))
 
 
 def _joint_window_map(
@@ -1103,22 +1248,75 @@ def _assign_peaks_once(
     library_mz = species_library["m_over_z_da"].to_numpy()
     rows: list[dict[str, object]] = []
     use_second_pass_priors = element_prior is not None or charge_prior is not None or family_prior is not None
-    # Molecular isotopologue envelope: a molecular candidate matched through a
-    # minor isotopologue is only physical if its dominant isotopologue shows a
-    # correspondingly larger peak. Atomic families get this via family_score;
-    # molecules need their own dominant-must-dominate check.
+    # APT cannot resolve molecular isotope permutations separated by only a few
+    # mDa (e.g. 96Mo-96Mo vs 94Mo-98Mo). Score and envelope-check their summed
+    # probability as one line, matching the molecular detector's aggregation,
+    # rather than treating each permutation as an independently observable
+    # peak.
     dominant_isotopologue: dict[tuple[str, int], tuple[float, float]] = {}
+    molecular_isotopologue_group: dict[str, tuple[float, float]] = {}
     molecular_library = species_library[species_library["category"] == "molecular"]
     if not molecular_library.empty:
-        dominant_indices = molecular_library.groupby(["species_label", "charge"])[
-            "natural_probability"
-        ].idxmax()
-        for library_idx in dominant_indices:
-            library_row = species_library.loc[library_idx]
-            dominant_isotopologue[
-                (str(library_row["species_label"]), int(library_row["charge"]))
-            ] = (float(library_row["m_over_z_da"]), float(library_row["natural_probability"]))
-    peak_mz_all = peaks["peak_mz_da"].to_numpy(dtype=np.float64)
+        merge_tolerance = float(
+            analysis_cfg.get(
+                "molecular_isotopologue_merge_tolerance_da",
+                0.010,
+            )
+        )
+        for key, family in molecular_library.groupby(
+            ["species_label", "charge"],
+            sort=False,
+        ):
+            clusters: list[dict[str, object]] = []
+            for _, library_row in family.sort_values("m_over_z_da").iterrows():
+                mz_value = float(library_row["m_over_z_da"])
+                probability = float(library_row["natural_probability"])
+                candidate_id = str(library_row["candidate_id"])
+                if (
+                    clusters
+                    and mz_value - float(clusters[-1]["mz"])
+                    <= merge_tolerance
+                ):
+                    cluster = clusters[-1]
+                    old_probability = float(cluster["probability"])
+                    total_probability = old_probability + probability
+                    cluster["mz"] = (
+                        float(cluster["mz"]) * old_probability
+                        + mz_value * probability
+                    ) / max(total_probability, 1.0e-12)
+                    cluster["probability"] = total_probability
+                    cluster["candidate_ids"].append(candidate_id)
+                else:
+                    clusters.append(
+                        {
+                            "mz": mz_value,
+                            "probability": probability,
+                            "candidate_ids": [candidate_id],
+                        }
+                    )
+            for cluster in clusters:
+                group_value = (
+                    float(cluster["mz"]),
+                    float(cluster["probability"]),
+                )
+                for candidate_id in cluster["candidate_ids"]:
+                    molecular_isotopologue_group[str(candidate_id)] = group_value
+            if clusters:
+                dominant = max(
+                    clusters,
+                    key=lambda cluster: float(cluster["probability"]),
+                )
+                dominant_isotopologue[(str(key[0]), int(key[1]))] = (
+                    float(dominant["mz"]),
+                    float(dominant["probability"]),
+                )
+    if "peak_mz_raw_da" in peaks.columns:
+        peak_mz_all = peaks["peak_mz_raw_da"].where(
+            peaks["peak_mz_raw_da"].notna(),
+            peaks["peak_mz_da"],
+        ).to_numpy(dtype=np.float64)
+    else:
+        peak_mz_all = peaks["peak_mz_da"].to_numpy(dtype=np.float64)
     if "integrated_area" in peaks.columns and peaks["integrated_area"].notna().any():
         peak_intensity_all = peaks["integrated_area"].fillna(0.0).to_numpy(dtype=np.float64)
     else:
@@ -1128,22 +1326,139 @@ def _assign_peaks_once(
     envelope_penalty_weight = float(analysis_cfg.get("molecular_envelope_penalty", 2.5))
     envelope_min_area_ratio = float(analysis_cfg.get("molecular_envelope_min_area_ratio", 0.25))
     for _, peak in peaks.iterrows():
-        mz = float(peak["peak_mz_da"])
+        reported_mz = float(peak["peak_mz_da"])
+        raw_mz_value = peak.get("peak_mz_raw_da", reported_mz)
+        mz = (
+            float(raw_mz_value)
+            if pd.notna(raw_mz_value) and np.isfinite(float(raw_mz_value))
+            else reported_mz
+        )
         charge_hint = peak.get("charge_hint")
         neutral_mass_hint = peak.get("neutral_mass_hint")
         family_hint_element = peak.get("family_hint_element")
         family_hint_charge = peak.get("family_hint_charge")
         family_hint_isotope_label = peak.get("family_hint_isotope_label")
-        family_hint_strength = float(peak.get("family_hint_score", 0.0) or 0.0)
+        family_hint_raw_score = float(peak.get("family_hint_score", 0.0) or 0.0)
+        family_hint_score_saturation = float(
+            analysis_cfg.get("family_hint_score_saturation", 0.0)
+        )
+        family_hint_strength = (
+            family_hint_raw_score
+            / (family_hint_raw_score + family_hint_score_saturation)
+            if family_hint_score_saturation > 0.0 and family_hint_raw_score > 0.0
+            else family_hint_raw_score
+        )
         family_hint_exclusivity = float(peak.get("family_hint_exclusivity", 1.0) or 0.0)
         family_hint_candidates = _coerce_family_hint_candidates(peak.get("family_hint_candidates"))
+        family_reference_mz = peak.get("family_hint_reference_mz_da")
+        molecular_reference_mz = peak.get("molecular_family_reference_mz_da")
+        molecular_formula_for_mass = peak.get("molecular_family_formula")
+        molecular_charge_for_mass = peak.get("molecular_family_charge")
+        normalized_molecular_formula = _normalized_formula_counts(
+            molecular_formula_for_mass
+        )
+        molecular_min_matches = max(
+            int(analysis_cfg.get("custom_molecular_family_min_matches", 3)),
+            1,
+        )
+        molecular_family_candidates = _coerce_molecular_family_candidates(
+            peak.get("molecular_family_candidates")
+        )
+        if (
+            not molecular_family_candidates
+            and normalized_molecular_formula is not None
+            and pd.notna(molecular_charge_for_mass)
+        ):
+            # Backward compatibility for cached peak tables produced before
+            # molecular alternatives were persisted.
+            molecular_family_candidates = [
+                {
+                    "label": peak.get("molecular_family_label"),
+                    "formula": normalized_molecular_formula,
+                    "charge": int(molecular_charge_for_mass),
+                    "score": float(
+                        peak.get("molecular_family_coherence", 1.0) or 0.0
+                    )
+                    * float(
+                        peak.get(
+                            "molecular_family_match_count",
+                            molecular_min_matches,
+                        )
+                        or 0.0
+                    ),
+                    "reference_mz_da": molecular_reference_mz,
+                    "coherence": peak.get("molecular_family_coherence", 1.0),
+                    "match_count": peak.get(
+                        "molecular_family_match_count",
+                        molecular_min_matches,
+                    ),
+                    "effective_match_count": peak.get(
+                        "molecular_family_effective_match_count",
+                        peak.get(
+                            "molecular_family_match_count",
+                            molecular_min_matches,
+                        ),
+                    ),
+                    "member_interference": peak.get(
+                        "molecular_family_member_interference",
+                        False,
+                    ),
+                    "member_confidence": peak.get(
+                        "molecular_family_member_confidence",
+                        1.0,
+                    ),
+                    "member_atomic_degenerate": peak.get(
+                        "molecular_family_member_atomic_degenerate",
+                        False,
+                    ),
+                }
+            ]
         tolerance = peak_tolerance_da(
             mz,
             ppm_tolerance=float(analysis_cfg["ppm_tolerance"]),
             min_absolute_tolerance_da=float(analysis_cfg["min_absolute_tolerance_da"]),
             max_absolute_tolerance_da=float(analysis_cfg["max_absolute_tolerance_da"]),
         )
-        matches = species_library.loc[np.abs(library_mz - mz) <= tolerance].copy()
+        candidate_mask = np.abs(library_mz - mz) <= tolerance
+        if use_family_hints:
+            reference_values: list[object] = [
+                family_reference_mz,
+                molecular_reference_mz,
+            ]
+            for family_candidate in family_hint_candidates:
+                fitted_reference = family_candidate.get("fitted_mz_da")
+                calibration_shift = family_candidate.get(
+                    "calibration_shift_da",
+                    0.0,
+                )
+                if fitted_reference is not None and calibration_shift is not None:
+                    reference_values.append(
+                        float(fitted_reference) - float(calibration_shift)
+                    )
+            reference_values.extend(
+                candidate.get("reference_mz_da")
+                for candidate in molecular_family_candidates
+            )
+            for reference_value in reference_values:
+                if reference_value is None:
+                    continue
+                try:
+                    reference_mz_value = float(reference_value)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(reference_mz_value):
+                    continue
+                reference_tolerance = peak_tolerance_da(
+                    reference_mz_value,
+                    ppm_tolerance=float(analysis_cfg["ppm_tolerance"]),
+                    min_absolute_tolerance_da=float(analysis_cfg["min_absolute_tolerance_da"]),
+                    max_absolute_tolerance_da=float(analysis_cfg["max_absolute_tolerance_da"]),
+                )
+                candidate_mask |= (
+                    np.abs(library_mz - reference_mz_value)
+                    <= reference_tolerance
+                )
+        matches = species_library.loc[candidate_mask].copy()
         if matches.empty:
             rows.append(
                 {
@@ -1180,7 +1495,115 @@ def _assign_peaks_once(
                 }
             )
             continue
-        mass_error = mz - matches["m_over_z_da"]
+        effective_peak_mz = np.full(matches.shape[0], mz, dtype=np.float64)
+        if (
+            use_family_hints
+            and pd.notna(family_reference_mz)
+            and np.isfinite(float(family_reference_mz))
+        ):
+            atomic_reference_mask = matches.apply(
+                lambda row: _family_hint_match_score(
+                    row,
+                    hint_element=None if pd.isna(family_hint_element) else str(family_hint_element),
+                    hint_charge=None if pd.isna(family_hint_charge) else int(family_hint_charge),
+                    hint_isotope_label=(
+                        None
+                        if pd.isna(family_hint_isotope_label)
+                        else str(family_hint_isotope_label)
+                    ),
+                )
+                >= 1.85 - 1.0e-9,
+                axis=1,
+            ).to_numpy(dtype=bool)
+            effective_peak_mz[atomic_reference_mask] = float(family_reference_mz)
+        if use_family_hints and family_hint_candidates:
+            for match_position, (_, match_row) in enumerate(matches.iterrows()):
+                matching_atomic_candidates: list[
+                    tuple[float, float, float]
+                ] = []
+                for family_candidate in family_hint_candidates:
+                    if (
+                        _family_hint_match_score(
+                            match_row,
+                            hint_element=(
+                                str(family_candidate.get("element"))
+                                if family_candidate.get("element") is not None
+                                else None
+                            ),
+                            hint_charge=(
+                                int(family_candidate["charge"])
+                                if family_candidate.get("charge") is not None
+                                else None
+                            ),
+                            hint_isotope_label=(
+                                str(family_candidate.get("isotope_label"))
+                                if family_candidate.get("isotope_label") is not None
+                                else None
+                            ),
+                        )
+                        < 1.85 - 1.0e-9
+                    ):
+                        continue
+                    fitted_reference = family_candidate.get("fitted_mz_da")
+                    if fitted_reference is None:
+                        continue
+                    reference_value = float(fitted_reference) - float(
+                        family_candidate.get("calibration_shift_da", 0.0) or 0.0
+                    )
+                    if not np.isfinite(reference_value):
+                        continue
+                    matching_atomic_candidates.append(
+                        (
+                            float(family_candidate.get("score", 0.0) or 0.0),
+                            float(
+                                family_candidate.get("match_count", 0) or 0
+                            ),
+                            reference_value,
+                        )
+                    )
+                if matching_atomic_candidates:
+                    effective_peak_mz[match_position] = max(
+                        matching_atomic_candidates
+                    )[2]
+        if use_family_hints and molecular_family_candidates:
+            for match_position, (_, match_row) in enumerate(matches.iterrows()):
+                matching_molecular_candidates: list[
+                    tuple[float, float, float]
+                ] = []
+                for molecular_candidate in molecular_family_candidates:
+                    if not _molecular_candidate_matches(
+                        match_row,
+                        molecular_candidate,
+                    ):
+                        continue
+                    strength = _molecular_candidate_strength(
+                        molecular_candidate,
+                        min_matches=molecular_min_matches,
+                    )
+                    if strength <= 0.0:
+                        continue
+                    reference_value = molecular_candidate.get(
+                        "reference_mz_da"
+                    )
+                    if reference_value is None:
+                        continue
+                    reference_value = float(reference_value)
+                    if not np.isfinite(reference_value):
+                        continue
+                    matching_molecular_candidates.append(
+                        (
+                            strength,
+                            float(
+                                molecular_candidate.get("score", 0.0) or 0.0
+                            ),
+                            reference_value,
+                        )
+                    )
+                if matching_molecular_candidates:
+                    effective_peak_mz[match_position] = max(
+                        matching_molecular_candidates
+                    )[2]
+        mass_error = effective_peak_mz - matches["m_over_z_da"].to_numpy(dtype=np.float64)
         # High-count APT peak centroids are statistically precise to well under a
         # mDa; what limits mass accuracy is ppm-scale calibration systematics.
         # Scoring with tolerance/3 (tens of mDa) let chemically wrong candidates
@@ -1194,7 +1617,19 @@ def _assign_peaks_once(
             )
         )
         mass_score = np.exp(-0.5 * (mass_error / max(mass_sigma, 1e-6)) ** 2)
-        natural_score = _normalized_natural_probability(matches["natural_probability"])
+        scoring_natural_probability = matches.apply(
+            lambda row: molecular_isotopologue_group.get(
+                str(row.get("candidate_id")),
+                (
+                    float(row.get("m_over_z_da", 0.0)),
+                    float(row.get("natural_probability", 0.0)),
+                ),
+            )[1],
+            axis=1,
+        )
+        natural_score = _normalized_natural_probability(
+            scoring_natural_probability
+        )
         matches["family_score"] = matches["candidate_id"].map(lambda value: family_scores.get(str(value), 0.5))
         matches["mass_error_da"] = mass_error
         matches["mass_score"] = mass_score
@@ -1218,16 +1653,23 @@ def _assign_peaks_once(
         else:
             matches["charge_hint_score"] = 0.0
         if use_family_hints:
+            family_consistency_gate = np.sqrt(
+                np.clip(
+                    matches["family_score"].to_numpy(dtype=np.float64),
+                    float(analysis_cfg.get("family_hint_consistency_gate_floor", 0.0)),
+                    1.0,
+                )
+            )
             if use_second_pass_priors:
                 family_hint_gate = np.sqrt(
                     np.maximum(
                         matches["element_prior_score"].to_numpy(dtype=np.float64),
                         matches["family_prior_score"].to_numpy(dtype=np.float64),
                     )
-                ) * np.sqrt(np.clip(matches["family_score"].to_numpy(dtype=np.float64), 0.0, 1.0))
+                ) * family_consistency_gate
                 matches["family_hint_gate"] = np.clip(family_hint_gate, 0.0, 1.0)
             else:
-                matches["family_hint_gate"] = 1.0
+                matches["family_hint_gate"] = family_consistency_gate
             matches["family_hint_match_score"] = matches.apply(
                 lambda row: _family_hint_match_score(
                     row,
@@ -1241,6 +1683,7 @@ def _assign_peaks_once(
                 lambda row: _family_hint_candidate_support(
                     row,
                     family_hint_candidates=family_hint_candidates,
+                    score_saturation=family_hint_score_saturation,
                 ),
                 axis=1,
             )
@@ -1327,31 +1770,196 @@ def _assign_peaks_once(
             return hydride_penalty_weight
 
         matches["hydride_member_penalty"] = matches.apply(_hydride_on_member_penalty, axis=1)
-        # Molecular-family fingerprint hint: a peak claimed as a member of a
-        # verified molecular family (e.g. FeO+) boosts candidates with that
-        # exact formula and charge, mirroring atomic family hints.
-        molecular_formula = peak.get("molecular_family_formula")
-        molecular_charge = peak.get("molecular_family_charge")
+        molecular_complexity_weight = float(
+            analysis_cfg.get("molecular_complexity_penalty_per_extra_atom", 0.0)
+        )
+
+        def _molecular_complexity_penalty(row: pd.Series) -> float:
+            if (
+                molecular_complexity_weight <= 0.0
+                or str(row.get("category", "")) != "molecular"
+            ):
+                return 0.0
+            counts = row.get("element_counts")
+            if not isinstance(counts, dict):
+                return 0.0
+            atom_count = sum(max(int(count), 0) for count in counts.values())
+            return molecular_complexity_weight * max(atom_count - 1, 0)
+
+        matches["molecular_complexity_penalty"] = matches.apply(
+            _molecular_complexity_penalty,
+            axis=1,
+        )
+        homonuclear_penalty_weight = float(
+            analysis_cfg.get("molecular_homonuclear_penalty", 0.0)
+        )
+
+        def _molecular_homonuclear_penalty(row: pd.Series) -> float:
+            if (
+                homonuclear_penalty_weight <= 0.0
+                or str(row.get("category", "")) != "molecular"
+            ):
+                return 0.0
+            counts = row.get("element_counts")
+            if not isinstance(counts, dict) or len(counts) != 1:
+                return 0.0
+            atom_count = sum(max(int(count), 0) for count in counts.values())
+            return homonuclear_penalty_weight if atom_count > 1 else 0.0
+
+        matches["molecular_homonuclear_penalty"] = matches.apply(
+            _molecular_homonuclear_penalty,
+            axis=1,
+        )
+        oxide_prior_weight = float(
+            analysis_cfg.get("simple_oxide_prior_weight", 0.0)
+        )
+
+        def _simple_oxide_prior_score(row: pd.Series) -> float:
+            if (
+                oxide_prior_weight <= 0.0
+                or str(row.get("category", "")) != "molecular"
+            ):
+                return 0.0
+            counts = row.get("element_counts")
+            if (
+                not isinstance(counts, dict)
+                or "O" not in counts
+                or "H" in counts
+                or len(counts) != 2
+            ):
+                return 0.0
+            atom_count = sum(max(int(count), 0) for count in counts.values())
+            return 1.0 if atom_count <= 3 else 0.0
+
+        matches["simple_oxide_prior_score"] = matches.apply(
+            _simple_oxide_prior_score,
+            axis=1,
+        )
+        common_species = {
+            str(label)
+            for label in analysis_cfg.get("common_species_prior_labels", [])
+        }
+        matches["common_species_prior_score"] = (
+            matches["species_label"].astype(str).isin(common_species).astype(float)
+        )
+        # Molecular-family fingerprint hints remain a set of alternatives
+        # through final assignment. Isobaric envelopes can coherently support
+        # two formulae; chemistry and whole-spectrum priors, not detector loop
+        # order, should break that tie.
         molecular_hint_weight = float(analysis_cfg.get("molecular_family_hint_weight", 1.2))
-        if (
-            isinstance(molecular_formula, dict)
-            and molecular_formula
-            and pd.notna(molecular_charge)
-            and molecular_hint_weight > 0.0
-        ):
-            normalized_formula = {str(k): int(v) for k, v in molecular_formula.items()}
+        molecular_contradiction_penalty = float(
+            analysis_cfg.get("molecular_family_contradiction_penalty", 0.0)
+        )
+        molecular_degenerate_penalty = float(
+            analysis_cfg.get("molecular_family_degenerate_penalty", 0.0)
+        )
+        molecular_degenerate_threshold = max(
+            float(
+                analysis_cfg.get(
+                    "molecular_family_degenerate_confidence_threshold",
+                    0.10,
+                )
+            ),
+            1.0e-9,
+        )
+        maximum_molecular_score = max(
+            (
+                float(candidate.get("score", 0.0) or 0.0)
+                for candidate in molecular_family_candidates
+            ),
+            default=0.0,
+        )
 
-            def _molecular_hint_match(row: pd.Series) -> float:
-                counts = row.get("element_counts")
-                if not isinstance(counts, dict):
-                    return 0.0
-                if int(row.get("charge", 0)) != int(molecular_charge):
-                    return 0.0
-                return 1.0 if {str(k): int(v) for k, v in counts.items()} == normalized_formula else 0.0
+        def _molecular_candidate_evidence(
+            candidate: dict[str, object],
+        ) -> float:
+            relative_score = (
+                np.clip(
+                    float(candidate.get("score", 0.0) or 0.0)
+                    / maximum_molecular_score,
+                    0.0,
+                    1.0,
+                )
+                if maximum_molecular_score > 0.0
+                else 1.0
+            )
+            return _molecular_candidate_strength(
+                candidate,
+                min_matches=molecular_min_matches,
+            ) * float(relative_score) ** 2
 
-            matches["molecular_family_hint"] = matches.apply(_molecular_hint_match, axis=1)
-        else:
-            matches["molecular_family_hint"] = 0.0
+        maximum_molecular_strength = max(
+            (
+                _molecular_candidate_evidence(candidate)
+                for candidate in molecular_family_candidates
+            ),
+            default=0.0,
+        )
+
+        def _molecular_candidate_metrics(
+            row: pd.Series,
+        ) -> tuple[float, float, float, float]:
+            matching_candidates = [
+                candidate
+                for candidate in molecular_family_candidates
+                if _molecular_candidate_matches(row, candidate)
+            ]
+            if not matching_candidates:
+                return 0.0, 0.0, maximum_molecular_strength, 0.0
+            hint_strength = max(
+                _molecular_candidate_evidence(candidate)
+                for candidate in matching_candidates
+            )
+            degenerate_strength = 0.0
+            for candidate in matching_candidates:
+                member_confidence = candidate.get("member_confidence", 1.0)
+                if member_confidence is None or pd.isna(member_confidence):
+                    member_confidence = 1.0
+                degenerate_strength = max(
+                    degenerate_strength,
+                    float(
+                        np.clip(
+                            (
+                                molecular_degenerate_threshold
+                                - float(member_confidence)
+                            )
+                            / molecular_degenerate_threshold,
+                            0.0,
+                            1.0,
+                        )
+                    ),
+                )
+            # A lower-scoring clean envelope must pay for contradicting the
+            # stronger fingerprint. An explicitly interference-marked
+            # alternative may be a real partial contributor to the same mixed
+            # peak, so retain it without that exclusivity penalty.
+            has_interference = any(
+                bool(candidate.get("member_interference", False))
+                for candidate in matching_candidates
+            )
+            contradiction_strength = (
+                0.0
+                if has_interference
+                else max(maximum_molecular_strength - hint_strength, 0.0)
+            )
+            return 1.0, hint_strength, contradiction_strength, degenerate_strength
+
+        molecular_metrics = [
+            _molecular_candidate_metrics(row)
+            for _, row in matches.iterrows()
+        ]
+        matches["molecular_family_hint"] = [
+            values[0] for values in molecular_metrics
+        ]
+        matches["molecular_family_hint_strength"] = [
+            values[1] for values in molecular_metrics
+        ]
+        matches["molecular_family_contradiction_strength"] = [
+            values[2] for values in molecular_metrics
+        ]
+        matches["molecular_family_degenerate_strength"] = [
+            values[3] for values in molecular_metrics
+        ]
 
         def _envelope_penalty_value(row: pd.Series) -> float:
             if str(row.get("category", "")) != "molecular" or envelope_penalty_weight <= 0.0:
@@ -1361,7 +1969,13 @@ def _assign_peaks_once(
             if dominant is None:
                 return 0.0
             dominant_mz, dominant_probability = dominant
-            row_probability = float(row.get("natural_probability", 0.0) or 0.0)
+            _row_group_mz, row_probability = molecular_isotopologue_group.get(
+                str(row.get("candidate_id")),
+                (
+                    float(row.get("m_over_z_da", 0.0)),
+                    float(row.get("natural_probability", 0.0) or 0.0),
+                ),
+            )
             if row_probability <= 0.0 or row_probability >= 0.9 * dominant_probability:
                 return 0.0
             expected_dominant = peak_intensity_current * dominant_probability / row_probability
@@ -1418,10 +2032,19 @@ def _assign_peaks_once(
             - matches["unsupported_element_penalty"]
             - matches["envelope_penalty"]
             - matches["hydride_member_penalty"]
+            - matches["molecular_complexity_penalty"]
+            - matches["molecular_homonuclear_penalty"]
             - matches["exotic_penalty"]
-            + float(analysis_cfg.get("molecular_family_hint_weight", 1.2))
-            * matches["molecular_family_hint"]
+            + molecular_hint_weight
+            * matches["molecular_family_hint_strength"]
             * matches["mass_score"]
+            + float(analysis_cfg.get("common_species_prior_weight", 0.0))
+            * matches["common_species_prior_score"]
+            + oxide_prior_weight * matches["simple_oxide_prior_score"]
+            - molecular_contradiction_penalty
+            * matches["molecular_family_contradiction_strength"]
+            - molecular_degenerate_penalty
+            * matches["molecular_family_degenerate_strength"]
         )
         if use_second_pass_priors:
             score = (
@@ -1519,6 +2142,12 @@ def _assign_peaks_once(
                     "element_prior_score": float(match["element_prior_score"]),
                     "charge_prior_score": float(match["charge_prior_score"]),
                     "family_prior_score": float(match["family_prior_score"]),
+                    "common_species_prior_score": float(
+                        match["common_species_prior_score"]
+                    ),
+                    "simple_oxide_prior_score": float(
+                        match["simple_oxide_prior_score"]
+                    ),
                     "unsupported_charge_penalty": float(match["unsupported_charge_penalty"]),
                     "base_score": float(match["score"]),
                     "local_fit_score": 0.0,
@@ -1842,6 +2471,18 @@ def _anchored_elements(
     ambiguous_min_peaks = int(
         analysis_cfg.get("element_pruning_ambiguous_min_peaks", 2)
     )
+    single_atomic_min_probability = float(
+        analysis_cfg.get(
+            "element_pruning_single_atomic_anchor_min_probability",
+            1.1,
+        )
+    )
+    single_atomic_min_mass_score = float(
+        analysis_cfg.get(
+            "element_pruning_single_atomic_anchor_min_mass_score",
+            0.85,
+        )
+    )
     anchored: set[str] = set(_hinted_elements_from_peaks(peaks, config=config))
     if "family_hint_element" in peaks.columns:
         anchored |= {
@@ -1852,6 +2493,20 @@ def _anchored_elements(
     rank1 = assignments[
         (assignments["rank"] == 1) & (assignments["species_label"] != "unassigned")
     ]
+    common_species = {
+        str(label)
+        for label in analysis_cfg.get("common_species_prior_labels", [])
+    }
+    common_anchor_min_probability = float(
+        analysis_cfg.get("common_species_anchor_min_probability", 0.5)
+    )
+    trusted_common = rank1[
+        rank1["species_label"].astype(str).isin(common_species)
+        & (rank1["probability"] >= common_anchor_min_probability)
+    ]
+    for counts in trusted_common["element_counts"].tolist():
+        if isinstance(counts, dict):
+            anchored.update(str(element) for element in counts)
     ambiguous_atomic_peaks: defaultdict[str, set[str]] = defaultdict(set)
     for _, row in rank1.iterrows():
         counts = row.get("element_counts")
@@ -1863,6 +2518,15 @@ def _anchored_elements(
             continue
         elements = {str(element) for element in counts}
         if str(row.get("confidence", "")) == "high":
+            anchored |= elements
+            continue
+        if (
+            float(row.get("probability", 0.0)) >= single_atomic_min_probability
+            and float(row.get("mass_score", 0.0)) >= single_atomic_min_mass_score
+        ):
+            # Trace/near-monoisotopic elements may have only one observable
+            # line. A strong single atomic match is allowed to survive pruning,
+            # while its score still competes normally on the next pass.
             anchored |= elements
             continue
         for element in elements:
@@ -1905,36 +2569,94 @@ def _elements_in_use(assignments: pd.DataFrame) -> set[str]:
     return used
 
 
+def _apply_final_chemistry_priors(
+    assignments: pd.DataFrame,
+    *,
+    config: dict,
+) -> pd.DataFrame:
+    if assignments.empty:
+        return assignments
+    oxygen_dimer_weight = float(
+        config["analysis"].get("oxygen_dimer_prior_weight", 0.0)
+    )
+    if oxygen_dimer_weight <= 0.0:
+        return assignments
+    adjusted = assignments.copy()
+    adjusted["final_chemistry_prior_score"] = 0.0
+    oxygen_dimer = adjusted.apply(
+        lambda row: (
+            str(row.get("category", "")) == "molecular"
+            and int(row.get("charge", 0)) == 1
+            and row.get("element_counts") == {"O": 2}
+        ),
+        axis=1,
+    )
+    adjusted.loc[oxygen_dimer, "final_chemistry_prior_score"] = oxygen_dimer_weight
+    adjusted.loc[oxygen_dimer, "score"] += oxygen_dimer_weight
+    groups = [
+        _rerank_assignment_group(group, config=config)
+        for _, group in adjusted.groupby("peak_id", sort=False)
+    ]
+    return pd.concat(groups, ignore_index=True) if groups else adjusted
+
+
 def assign_peaks(
     peaks: pd.DataFrame,
     *,
     config: dict,
+    library_cache: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     analysis_cfg = config["analysis"]
     backend = str(analysis_cfg.get("assignment_backend", "joint_optimizer"))
     backend_runner = assign_peaks_two_pass if backend == "two_pass" else assign_peaks_joint
     # The combinatorial species library is identical across pruning rounds
     # (same peaks -> same element support); build it once and reuse.
-    library_cache: dict = {}
+    if library_cache is None:
+        library_cache = {}
     assignments, summary = backend_runner(peaks, config=config, library_cache=library_cache)
-    if assignments.empty or not bool(analysis_cfg.get("element_pruning_enabled", True)):
+    if assignments.empty:
         return assignments, summary
-    excluded: set[str] = set()
-    for _ in range(int(analysis_cfg.get("element_pruning_max_rounds", 2))):
-        anchored = _anchored_elements(peaks, assignments, config=config)
-        unanchored = _elements_in_use(assignments) - anchored
-        unanchored -= excluded
-        if not unanchored:
-            break
-        excluded |= unanchored
-        assignments, summary = backend_runner(
-            peaks, config=config, excluded_elements=excluded, library_cache=library_cache
-        )
-        if assignments.empty:
-            break
-    if excluded and not assignments.empty:
-        assignments["pruned_elements"] = ";".join(sorted(excluded))
+    if bool(analysis_cfg.get("element_pruning_enabled", True)):
+        excluded: set[str] = set()
+        for _ in range(int(analysis_cfg.get("element_pruning_max_rounds", 2))):
+            anchored = _anchored_elements(peaks, assignments, config=config)
+            unanchored = _elements_in_use(assignments) - anchored
+            unanchored -= excluded
+            if not unanchored:
+                break
+            excluded |= unanchored
+            assignments, summary = backend_runner(
+                peaks, config=config, excluded_elements=excluded, library_cache=library_cache
+            )
+            if assignments.empty:
+                break
+        if excluded and not assignments.empty:
+            assignments["pruned_elements"] = ";".join(sorted(excluded))
+    assignments = _apply_final_chemistry_priors(
+        assignments,
+        config=config,
+    )
+    summary = top_assignment_table(assignments, peaks)
     return assignments, summary
+
+
+def _apportion_integer_counts(frame: pd.DataFrame, field: str = "weighted_counts") -> pd.DataFrame:
+    """Round expected counts while preserving their rounded table total."""
+    if frame.empty:
+        frame["integer_count"] = pd.Series(dtype=np.int64)
+        return frame
+    values = frame[field].fillna(0.0).clip(lower=0.0).to_numpy(dtype=np.float64)
+    floors = np.floor(values).astype(np.int64)
+    # JS Math.round semantics for non-negative counts (rather than Python's
+    # bankers rounding) keep the ports deterministic at exact .5 totals.
+    remaining = int(np.floor(float(values.sum()) + 0.5)) - int(floors.sum())
+    if remaining > 0:
+        remainders = values - floors
+        # Stable ordering makes ties deterministic and matches the JS port.
+        order = np.argsort(-remainders, kind="stable")
+        floors[order[:remaining]] += 1
+    frame["integer_count"] = floors
+    return frame
 
 
 def composition_tables(
@@ -2044,6 +2766,7 @@ def composition_tables(
     species["atomic_percent_assignment"] = 100.0 * species[
         "assignment_weighted_counts"
     ] / max(float(species["assignment_weighted_counts"].sum()), 1.0)
+    species = _apportion_integer_counts(species)
     elements = element_frame.groupby(["element"], as_index=False).sum(numeric_only=True)
     elements["atomic_percent_weighted"] = 100.0 * elements["weighted_counts"] / max(
         float(elements["weighted_counts"].sum()), 1.0
@@ -2054,6 +2777,7 @@ def composition_tables(
     elements["atomic_percent_assignment"] = 100.0 * elements[
         "assignment_weighted_counts"
     ] / max(float(elements["assignment_weighted_counts"].sum()), 1.0)
+    elements = _apportion_integer_counts(elements)
     species.attrs["overlap_deconvolution"] = overlap_diagnostics
     elements.attrs["overlap_deconvolution"] = overlap_diagnostics
     if atomic_isotope_frame.empty:
@@ -2089,6 +2813,7 @@ def composition_tables(
     isotopes["isotope_fraction_robust"] = isotopes.groupby("element")["robust_counts"].transform(
         lambda values: values / max(float(values.sum()), 1.0)
     )
+    isotopes = _apportion_integer_counts(isotopes)
     natural = natural_abundance_by_element()
     resolution_rows: list[dict[str, object]] = []
     for element, group in isotopes.groupby("element", sort=True):

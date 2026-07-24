@@ -735,7 +735,11 @@ def build_species_library(
     selected = isotope_table[isotope_table["symbol"].isin(chosen)].reset_index(drop=True)
     rows: list[dict[str, object]] = []
     candidate_id = 1
-    for _, isotope in selected.iterrows():
+    # Atomic candidates are cheap (hundreds of rows), so do not subject them
+    # to the combinatorial molecule cap. The old shared cap omitted legitimate
+    # trace elements such as Ga, Mn, Co, V, and Ni before assignment could even
+    # score them. Molecular combinations still use only `selected`.
+    for _, isotope in isotope_table.iterrows():
         for charge in range(1, max_charge + 1):
             # An ion cannot lose more electrons than its atomic number
             # (H^2+ does not exist; He^3+ does not exist).

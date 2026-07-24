@@ -7,6 +7,9 @@ datasets shipped with an expert range file).
 """
 from __future__ import annotations
 
+import ast
+import json
+
 import numpy as np
 import pandas as pd
 
@@ -167,4 +170,124 @@ def peak_metrics_vs_ranges(
             np.sum(ion_weights[populated & hit]) / max(np.sum(ion_weights[populated]), 1.0)
         ),
         "in_reference_fraction": float(in_any.mean()) if detected.size else float("nan"),
+    }
+
+
+def _formula_dict(value: object) -> dict[str, int]:
+    if isinstance(value, dict):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                return {}
+    else:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    formula: dict[str, int] = {}
+    for element, count in parsed.items():
+        try:
+            integer_count = int(count)
+        except (TypeError, ValueError):
+            continue
+        if integer_count > 0:
+            formula[str(element)] = integer_count
+    return formula
+
+
+def assignment_metrics_vs_ranges(
+    peaks: pd.DataFrame,
+    assignments: pd.DataFrame,
+    ranges: pd.DataFrame,
+    mz_values: np.ndarray,
+    *,
+    min_range_ions: int = 200,
+) -> dict[str, object]:
+    """Score top species formulae against populated expert ranges.
+
+    Detection and identification are kept separate: coverage reports how many
+    expert ranges contain a detected peak, while formula accuracy is evaluated
+    among covered ranges. The ion-weighted score prevents dozens of trace
+    ranges from obscuring correctness on the material's dominant signal.
+    """
+    if peaks.empty or assignments.empty or ranges.empty:
+        return {}
+    mz_sorted = np.sort(np.asarray(mz_values, dtype=np.float64))
+    top = assignments.loc[assignments["rank"] == 1].copy()
+    if top.empty:
+        return {}
+    top["predicted_formula"] = top["element_counts"].map(_formula_dict)
+    peak_frame = peaks[["peak_id", "peak_mz_da"]].copy()
+    if "integrated_area" in peaks.columns:
+        peak_frame["integrated_area"] = peaks["integrated_area"].fillna(0.0)
+    else:
+        peak_frame["integrated_area"] = 0.0
+    peak_frame = peak_frame.merge(
+        top[["peak_id", "predicted_formula"]],
+        on="peak_id",
+        how="left",
+    )
+    rows: list[dict[str, object]] = []
+    for _, reference in ranges.iterrows():
+        lo = float(reference["mz_lo_da"])
+        hi = float(reference["mz_hi_da"])
+        ion_count = int(
+            np.searchsorted(mz_sorted, hi, side="right")
+            - np.searchsorted(mz_sorted, lo, side="left")
+        )
+        if ion_count < int(min_range_ions):
+            continue
+        candidates = peak_frame[
+            (peak_frame["peak_mz_da"] >= lo) & (peak_frame["peak_mz_da"] <= hi)
+        ]
+        if candidates.empty:
+            rows.append({"ions": ion_count, "covered": False, "exact": False, "elements": False})
+            continue
+        selected = candidates.sort_values(
+            ["integrated_area", "peak_mz_da"], ascending=[False, True]
+        ).iloc[0]
+        expected = _formula_dict(reference["formula"])
+        predicted = _formula_dict(selected["predicted_formula"])
+        rows.append(
+            {
+                "ions": ion_count,
+                "covered": True,
+                "exact": predicted == expected,
+                "elements": bool(set(predicted) & set(expected)),
+            }
+        )
+    if not rows:
+        return {}
+    covered = [row for row in rows if bool(row["covered"])]
+    total_ions = max(sum(int(row["ions"]) for row in rows), 1)
+    return {
+        "n_reference_assignments": len(rows),
+        "n_reference_assignments_covered": len(covered),
+        "assignment_range_coverage": len(covered) / len(rows),
+        "assignment_formula_accuracy": (
+            sum(bool(row["exact"]) for row in covered) / len(covered)
+            if covered
+            else float("nan")
+        ),
+        "assignment_formula_recall": (
+            sum(bool(row["exact"]) for row in rows) / len(rows)
+        ),
+        "assignment_formula_accuracy_ion_weighted": (
+            sum(int(row["ions"]) for row in rows if bool(row["exact"])) / total_ions
+        ),
+        "assignment_element_hit_rate": (
+            sum(bool(row["elements"]) for row in covered) / len(covered)
+            if covered
+            else float("nan")
+        ),
+        "assignment_element_recall": (
+            sum(bool(row["elements"]) for row in rows) / len(rows)
+        ),
+        "assignment_element_hit_rate_ion_weighted": (
+            sum(int(row["ions"]) for row in rows if bool(row["elements"])) / total_ions
+        ),
     }

@@ -140,9 +140,17 @@ analysis:
   custom_family_hint_sigma_penalty: 0.08
   custom_family_hint_recentering_max_da: 0.02
   custom_family_hint_score_min: 2.8
+  custom_family_hint_min_coherence: 0.70
   custom_family_hint_max_elements: 12
   custom_family_hint_min_element_support: 0.02
-  custom_family_hint_anchor_peak_limit: 24
+  custom_family_hint_direct_family_support_min: 0.85
+  custom_family_hint_anchor_peak_limit: 48
+  custom_family_hint_recovery_enabled: true
+  custom_family_hint_recovery_shift_ppm: 4000.0
+  custom_family_hint_recovery_min_matches: 3
+  custom_family_hint_recovery_min_coherence: 0.75
+  custom_family_hint_recovery_dominant_min_ratio: 0.70
+  custom_family_hint_recovery_score_scale: 0.85
   isotope_audit_enabled: true
   # Tail-aware audit: refit each family with a shared exponential tail (EMG) and
   # treat the Gaussian-vs-EMG fraction difference as a peak-shape systematic.
@@ -187,8 +195,10 @@ analysis:
     "2": 0.08
     "3": 0.06
     "4": 0.05
-  pyccapt_prominence_quantile: 0.95
-  pyccapt_min_prominence: 25.0
+  # Learned on the trusted control RRNGs. The older 0.95/25 gate discarded
+  # real trace ranges and the broad high-mass Hf2+ envelope.
+  pyccapt_prominence_quantile: 0.825
+  pyccapt_min_prominence: 10.0
   pyccapt_distance_bins: 3
   pyopenms_signal_to_noise: 0.0
   pyopenms_use_deisotoper: false
@@ -274,7 +284,7 @@ analysis:
   # Molecular candidates whose constituent elements lack independent sample
   # evidence are penalized: a molecule requires all of its elements to exist.
   molecular_unsupported_element_min_support: 0.03
-  molecular_unsupported_element_penalty: 0.9
+  molecular_unsupported_element_penalty: 0.8
   # Atomic candidates of elements with no independent sample-level evidence
   # are penalized on a smooth ramp (full penalty at zero support, none at the
   # threshold). Without this, always-included light elements (N, O, B) can
@@ -286,6 +296,23 @@ analysis:
   # peak somewhere in the spectrum (mirror of the atomic dominant check).
   molecular_envelope_penalty: 2.5
   molecular_envelope_min_area_ratio: 0.25
+  # Sum isotope permutations that are closer than practical APT resolution
+  # before natural-abundance and dominant-envelope scoring.
+  molecular_isotopologue_merge_tolerance_da: 0.010
+  # Occam prior for an isolated mass match. Multi-atom ions are common, but
+  # absent envelope/family evidence an increasingly complex formula should not
+  # outrank an equally good atomic interpretation by chance.
+  molecular_complexity_penalty_per_extra_atom: 0.75
+  molecular_homonuclear_penalty: 0.4
+  simple_oxide_prior_weight: 0.6
+  oxygen_dimer_prior_weight: 4.5
+  # Water is a ubiquitous residual-gas/field-evaporation ion in APT. This
+  # calibrated prior prevents an isolated rare-isotope coincidence from
+  # beating H2O+.
+  common_species_prior_labels:
+    - H2O+
+  common_species_prior_weight: 5.5
+  common_species_anchor_min_probability: 0.5
   # An X-hydride candidate sitting on a confirmed member position of X's own
   # isotope family is the classic +1 Da systematic; the family keeps the
   # area unless measured abundances actually deviate.
@@ -300,6 +327,11 @@ analysis:
   custom_family_member_verify_enabled: true
   custom_family_member_verify_min_z: 4.0
   custom_family_member_verify_min_excess: 60.0
+  # Three clean members are enough to establish a robust family scale; a
+  # fourth member that is much too large is then treated as an overlap instead
+  # of causing the entire family (notably Ni under TiO) to be rejected.
+  custom_family_interference_min_observed_members: 3
+  custom_family_interference_ratio: 3.0
   # Two-member family recovery: accepted only when the minor member's fitted
   # fraction reproduces its natural value within this relative tolerance.
   custom_family_recovery_two_member_minor_rel_tolerance: 0.6
@@ -309,11 +341,38 @@ analysis:
   custom_molecular_family_min_matches: 3
   custom_molecular_family_min_coherence: 0.75
   custom_molecular_family_max_anchor_elements: 6
+  custom_molecular_family_max_charge: 3
+  custom_molecular_family_interference_min_observed_members: 4
+  custom_molecular_family_interference_ratio: 3.0
+  custom_molecular_family_min_unclaimed_matches: 2
+  # A molecular hypothesis assembled mostly from peaks already explained by
+  # independent atomic fingerprints is a composite coincidence. Require most
+  # of its detected members to be independently available; one overlap in a
+  # five-line family remains fine.
+  custom_molecular_family_min_unclaimed_fraction: 0.75
   molecular_family_hint_weight: 1.2
+  # A verified multi-peak molecular isotope fingerprint is stronger evidence
+  # than an isolated exact-mass coincidence. Reward its matching formula and
+  # penalize candidates that contradict the family in proportion to fit
+  # coherence and member coverage.
+  molecular_family_contradiction_penalty: 3.0
+  # A recovered family member marked zero-confidence because it is
+  # mass-degenerate with a simpler atomic ion should not make that molecular
+  # interpretation self-fulfilling.
+  molecular_family_degenerate_penalty: 0.6
+  molecular_family_degenerate_confidence_threshold: 0.10
   # Final peak gate: a reported peak must be a significant local Poisson
   # excess over its own sidebands (family members exempt).
   custom_peak_significance_filter_enabled: true
   custom_peak_significance_min_z: 5.0
+  # Crowded peaks can fail the sideband test when a strong neighbor pollutes
+  # one side. Preserve independently multi-resolution detections whose
+  # equal-error range is both pure and high-SNR. These thresholds recover the
+  # trace Zr/Co/Ni/SiO controls without admitting the held-out W artifacts.
+  custom_peak_significance_rescue_enabled: true
+  custom_peak_significance_rescue_min_detection_sources: 2
+  custom_peak_significance_rescue_min_eer_purity: 0.80
+  custom_peak_significance_rescue_min_eer_snr: 10.0
   # Assignment rows below this softmax probability are dropped from the
   # weighted composition (with per-peak renormalization); losing candidates
   # otherwise bleed a few percent of every large peak into phantom elements.
@@ -347,6 +406,8 @@ analysis:
   # One ambiguous atomic peak is a hypothesis, not independent evidence for
   # introducing that element into the next assignment round.
   element_pruning_ambiguous_min_peaks: 2
+  element_pruning_single_atomic_anchor_min_probability: 1.1
+  element_pruning_single_atomic_anchor_min_mass_score: 0.85
   element_pruning_molecular_anchor_min_probability: 0.6
   ambiguous_score_delta: 0.35
   high_confidence_min_probability: 0.72
@@ -360,6 +421,16 @@ analysis:
   charge_hint_weight: 0.35
   family_hint_weight: 0.85
   family_hint_multi_weight: 0.28
+  # Detector family scores grow with member count and are evidence scores, not
+  # probabilities. Saturate them before assignment so a false four-line
+  # coincidence cannot overwhelm every mass/chemistry term merely because its
+  # raw score is numerically large.
+  family_hint_score_saturation: 0.0
+  # Independently compare the candidate's complete isotope envelope with the
+  # observed peak areas before trusting a detector hint. This rejects mixed
+  # families that happen to land on several isotope masses (for example
+  # Fe/Ni/Cr peaks masquerading as Cd2+).
+  family_hint_consistency_gate_floor: 0.0
   neutral_hint_weight: 1.5
   neutral_hint_requires_charge_match: true
   family_l1_scale: 2.2
@@ -374,6 +445,7 @@ analysis:
   local_fit_weight: 1.35
   local_fit_sigma_floor_da: 0.035
   local_fit_window_margin_da: 0.25
+  local_fit_max_template_correlation: 0.9995
   charge_state_penalties:
     "1": 0.0
     "2": 0.0

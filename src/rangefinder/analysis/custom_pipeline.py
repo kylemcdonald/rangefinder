@@ -18,7 +18,11 @@ from rangefinder.analysis.common import (
     smooth_counts,
 )
 from rangefinder.analysis.adaptive_ranging import apply_adaptive_ranging
-from rangefinder.analysis.assignment import infer_element_support
+from rangefinder.analysis.assignment import (
+    _atomic_family_support_from_peaks,
+    infer_element_support,
+    robust_family_observation,
+)
 from rangefinder.analysis.pipeline_utils import finalize_method_analysis
 from rangefinder.analysis.segmentation import segment_sample_regions
 from rangefinder.analysis.tof_fitting import fit_isotope_family_tof, fit_local_tof_peak_mixture
@@ -437,6 +441,9 @@ def _annotate_atomic_family_hints(
         return float(max(recovery_shift_ppm * 1.0e-6 * mz, shift_floor_da))
 
     score_min = float(analysis_cfg["custom_family_hint_score_min"])
+    min_coherence = float(
+        analysis_cfg.get("custom_family_hint_min_coherence", 0.7)
+    )
     min_counts = float(analysis_cfg["custom_family_hint_min_total_counts"])
     max_charge = int(analysis_cfg["custom_family_hint_max_charge"])
     element_support = infer_element_support(
@@ -461,6 +468,27 @@ def _annotate_atomic_family_hints(
             element
             for element, score in element_support.items()
             if float(score) >= min_element_support
+        }
+    )
+    # A trace element can sit far below the global intensity cutoff while its
+    # multi-isotope pattern is still decisive. Preserve that direct evidence.
+    direct_family_support = _atomic_family_support_from_peaks(
+        peaks,
+        max_charge=max_charge,
+        ppm_tolerance=float(analysis_cfg["ppm_tolerance"]),
+        min_absolute_tolerance_da=float(analysis_cfg["min_absolute_tolerance_da"]),
+        max_absolute_tolerance_da=float(analysis_cfg["max_absolute_tolerance_da"]),
+    )
+    direct_support_min = float(
+        analysis_cfg.get("custom_family_hint_direct_family_support_min", 0.85)
+    )
+    isotope_family_sizes = isotopes.groupby("symbol").size().to_dict()
+    allowed_elements.update(
+        {
+            str(element)
+            for (element, _charge), score in direct_family_support.items()
+            if int(isotope_family_sizes.get(element, 0)) >= 2
+            and float(score) >= direct_support_min
         }
     )
     anchor_peak_limit = int(analysis_cfg.get("custom_family_hint_anchor_peak_limit", 24))
@@ -490,6 +518,13 @@ def _annotate_atomic_family_hints(
             tight_limit = shift_limit(dominant_expected_mz)
             recovery_limit = recovery_shift_limit(dominant_expected_mz) if recovery_enabled else tight_limit
             candidate_shifts: list[tuple[float, str]] = []
+            # The tight, near-calibrated hypothesis should not depend on the
+            # family being among the globally strongest peaks. This preserves
+            # coherent trace families in spectra dominated by a few elements.
+            nearest_dominant = int(np.argmin(np.abs(peak_positions - dominant_expected_mz)))
+            nearest_shift = float(peak_positions[nearest_dominant] - dominant_expected_mz)
+            if abs(nearest_shift) <= tight_limit:
+                candidate_shifts.append((nearest_shift, "tight"))
             for peak_idx in anchor_peak_indices:
                 shift = float(peak_positions[peak_idx] - dominant_expected_mz)
                 if abs(shift) <= tight_limit:
@@ -542,11 +577,19 @@ def _annotate_atomic_family_hints(
                         continue
                 sigma_da_init = float(max(np.median(peak_fwhm[[peak_idx for peak_idx, _ in matches]]) / 2.354820045, 0.005))
                 fit_shift_tolerance = shift_limit(float(np.median(expected_mz)))
+                fit_target_mz = expected_mz
                 if shift_tier == "recovery":
-                    fit_shift_tolerance = max(fit_shift_tolerance, abs(float(shift)) + 0.02)
+                    # The optimizer is deliberately local. Merely widening its
+                    # bounds around an unshifted target left it trapped near
+                    # zero for the large shared offsets this recovery tier is
+                    # meant to handle (the broad Hf2+ control is shifted by
+                    # about 0.2 Da). Center the local fit on the shift already
+                    # established by several observed isotope members.
+                    fit_target_mz = expected_mz + float(shift)
+                    fit_shift_tolerance = max(fit_shift_tolerance, 0.03)
                 fit = fit_isotope_family_tof(
                     np.asarray(raw_mz, dtype=np.float64),
-                    target_mz_da=expected_mz,
+                    target_mz_da=fit_target_mz,
                     sigma_da_init=sigma_da_init,
                     window_margin_da=float(analysis_cfg["custom_family_hint_window_margin_da"]),
                     shift_tolerance_da=fit_shift_tolerance,
@@ -559,10 +602,27 @@ def _annotate_atomic_family_hints(
                 if fit is None:
                     continue
                 fitted_counts = np.asarray(fit["fitted_counts"], dtype=float)
-                total_counts = float(np.sum(fitted_counts))
+                (
+                    robust_fitted_counts,
+                    fitted_fraction,
+                    interference_mask,
+                    _family_scale,
+                ) = robust_family_observation(
+                    fitted_counts,
+                    natural_fraction,
+                    min_observed_members=int(
+                        analysis_cfg.get(
+                            "custom_family_interference_min_observed_members",
+                            3,
+                        )
+                    ),
+                    interference_ratio=float(
+                        analysis_cfg.get("custom_family_interference_ratio", 3.0)
+                    ),
+                )
+                total_counts = float(np.sum(robust_fitted_counts))
                 if total_counts < min_counts:
                     continue
-                fitted_fraction = np.asarray(fit["fitted_fraction"], dtype=float)
                 expected_fraction = natural_fraction / max(float(np.sum(natural_fraction)), 1.0e-12)
                 l1_distance = float(np.abs(fitted_fraction - expected_fraction).sum())
                 # A family hypothesis whose dominant natural isotope does not
@@ -596,6 +656,11 @@ def _annotate_atomic_family_hints(
                     used_peak_idx.add(peak_idx)
                     nearest_matches.append((peak_idx, isotope_idx))
                     matched_isotope_set.add(isotope_idx)
+                nearest_matches = [
+                    (peak_idx, isotope_idx)
+                    for peak_idx, isotope_idx in nearest_matches
+                    if not bool(interference_mask[isotope_idx])
+                ]
                 if len(nearest_matches) < 2:
                     continue
                 if dominant_idx not in [isotope_idx for _, isotope_idx in nearest_matches]:
@@ -612,6 +677,8 @@ def _annotate_atomic_family_hints(
                 # cannot reproduce natural relative abundances should not be able
                 # to buy its way back with match count or peak prominence.
                 coherence = float(max(0.0, 1.0 - l1_distance / 2.0))
+                if coherence < min_coherence:
+                    continue
                 score = coherence * (
                     float(len(nearest_matches)) + 1.25 * coherence + 0.35 * support_score
                 )
@@ -684,6 +751,8 @@ def _annotate_atomic_family_hints(
                     matched_isotopes = {isotope_idx for _, isotope_idx in nearest_matches}
                     for isotope_idx, fitted_mz in enumerate(np.asarray(fit["fitted_mz_da"], dtype=float)):
                         if isotope_idx in matched_isotopes:
+                            continue
+                        if bool(interference_mask[isotope_idx]):
                             continue
                         candidate_order = np.argsort(np.abs(peak_positions - float(fitted_mz)))
                         for peak_idx in candidate_order:
@@ -777,19 +846,19 @@ def _annotate_atomic_family_hints(
         peaks.loc[peaks["peak_id"] == peak_id, "family_hint_tier"] = str(best.get("tier", "tight"))
         fitted_mz = float(best["fitted_mz_da"])
         current_mz = float(peaks.loc[peaks["peak_id"] == peak_id, "peak_mz_da"].iloc[0])
-        # Move the peak onto the reference mass scale: the family fingerprint
-        # identified the species, so the corrected center is the fitted
-        # position minus the shared shift. The shared shift absorbs both
-        # calibration error and the apex pull of the one-sided thermal tail
-        # (a proportional ~hundreds-of-ppm bias every histogram detector
-        # shares); subtracting it is what makes hinted peaks land on the
-        # reference ladder. Applies to both tiers - the recovery tier just
-        # allows a larger shift.
+        # Keep the measured centroid immutable. A family supplies a
+        # candidate-specific calibrated reference, not a license to move the
+        # observation for every competing species. Mutating peak_mz_da here
+        # made a false family self-fulfilling: its own candidate became exact
+        # while the correct candidate was moved away from its measured mass.
         calibration_shift = float(best.get("calibration_shift_da", 0.0))
         if str(best.get("tier", "tight")) == "recovery" or abs(current_mz - fitted_mz) <= float(
             analysis_cfg["custom_family_hint_recentering_max_da"]
         ):
-            peaks.loc[peaks["peak_id"] == peak_id, "peak_mz_da"] = fitted_mz - calibration_shift
+            peaks.loc[
+                peaks["peak_id"] == peak_id,
+                "family_hint_reference_mz_da",
+            ] = fitted_mz - calibration_shift
             peaks.loc[peaks["peak_id"] == peak_id, "family_hint_calibration_shift_da"] = calibration_shift
     return peaks.sort_values("peak_mz_da", ignore_index=True)
 
@@ -818,6 +887,45 @@ def _raw_member_excess(
     excess = core - expected
     z = excess / np.sqrt(max(expected, 1.0))
     return float(excess), float(z)
+
+
+def _peak_has_significance_rescue(
+    row: pd.Series,
+    *,
+    analysis_cfg: dict,
+) -> bool:
+    """Independent evidence that can rescue a sideband-contaminated peak."""
+    if not bool(analysis_cfg.get("custom_peak_significance_rescue_enabled", True)):
+        return False
+    counting_std = float(row.get("eer_counting_std", np.nan))
+    eer_snr = (
+        float(row.get("eer_integrated_area", 0.0)) / counting_std
+        if np.isfinite(counting_std) and counting_std > 0.0
+        else 0.0
+    )
+    return bool(
+        int(row.get("detection_source_count", 0))
+        >= int(
+            analysis_cfg.get(
+                "custom_peak_significance_rescue_min_detection_sources",
+                2,
+            )
+        )
+        and float(row.get("eer_purity", 0.0))
+        >= float(
+            analysis_cfg.get(
+                "custom_peak_significance_rescue_min_eer_purity",
+                0.8,
+            )
+        )
+        and eer_snr
+        >= float(
+            analysis_cfg.get(
+                "custom_peak_significance_rescue_min_eer_snr",
+                10.0,
+            )
+        )
+    )
 
 
 def _verify_missing_members(
@@ -910,9 +1018,9 @@ def _annotate_molecular_family_recovery(
     Real datasets can carry large local mass-scale errors at high m/z where
     molecular species live (an FeO+ ladder shifted by tens of mDa). Atomic
     families recover from this via the calibration-recovery tier; this pass
-    gives the same treatment to the most common molecular series, then moves
-    matched peaks onto the reference mass scale so the assignment stage sees
-    calibrated positions. Acceptance mirrors the atomic recovery tier:
+    gives the same treatment to the most common molecular series, then supplies
+    candidate-specific reference masses without mutating the measured
+    centroids. Acceptance mirrors the atomic recovery tier:
     dominant isotopologue matched, at least three members matched, and the
     event-level family fit must reproduce the expected isotopologue pattern.
     """
@@ -935,6 +1043,21 @@ def _annotate_molecular_family_recovery(
         peaks["molecular_family_shift_da"] = np.nan
         peaks["molecular_family_formula"] = pd.Series([None] * peaks.shape[0], dtype=object)
         peaks["molecular_family_charge"] = np.nan
+        peaks["molecular_family_reference_mz_da"] = np.nan
+        peaks["molecular_family_coherence"] = np.nan
+        peaks["molecular_family_match_count"] = np.nan
+        peaks["molecular_family_effective_match_count"] = np.nan
+        peaks["molecular_family_member_interference"] = False
+        peaks["molecular_family_member_confidence"] = np.nan
+        peaks["molecular_family_member_atomic_degenerate"] = False
+    # Keep every coherent molecular interpretation for a member peak. Isobaric
+    # envelopes can support more than one formula (for example Mo2^3+ and
+    # HfN^3+); greedily retaining only the first family makes that early local
+    # decision impossible for the sample-level assigner to correct.
+    peaks["molecular_family_candidates"] = pd.Series(
+        [[] for _ in range(peaks.shape[0])],
+        dtype=object,
+    )
     peak_positions = peaks["peak_mz_da"].to_numpy(dtype=float)
     peak_prominence = peaks["prominence"].fillna(0.0).to_numpy(dtype=float)
     hinted_mask = (
@@ -950,9 +1073,19 @@ def _annotate_molecular_family_recovery(
     min_coherence = float(analysis_cfg.get("custom_molecular_family_min_coherence", 0.75))
     min_counts = float(analysis_cfg.get("custom_family_hint_min_total_counts", 200.0))
     max_anchors = int(analysis_cfg.get("custom_molecular_family_max_anchor_elements", 6))
+    max_molecular_family_charge = int(
+        analysis_cfg.get(
+            "custom_molecular_family_max_charge",
+            analysis_cfg.get("max_molecular_charge", 3),
+        )
+    )
     partner_formulas = [
-        {"O": 1}, {"O": 2}, {"O": 3}, {"N": 1}, {"C": 1},
+        {"O": 1}, {"O": 2}, {"O": 3}, {"N": 1}, {"C": 1}, {"H": 1}, {"H": 2},
     ]
+    atomic_masses_by_symbol = {
+        str(symbol): group["mass_da"].to_numpy(dtype=float)
+        for symbol, group in isotope_table().groupby("symbol", sort=False)
+    }
 
     def match_tolerance(mz: float) -> float:
         return float(np.clip(match_ppm * 1.0e-6 * mz, tolerance_floor, tolerance_cap))
@@ -970,7 +1103,7 @@ def _annotate_molecular_family_recovery(
             fractions = np.asarray([line[1] for line in lines], dtype=float)
             fractions = fractions / fractions.sum()
             dominant_idx = int(np.argmax(fractions))
-            for charge in (1, 2):
+            for charge in range(1, max_molecular_family_charge + 1):
                 expected_mz = masses / float(charge)
                 if expected_mz[dominant_idx] < peak_positions.min() - 0.2 or expected_mz[dominant_idx] > peak_positions.max() + 0.2:
                     continue
@@ -1018,12 +1151,22 @@ def _annotate_molecular_family_recovery(
                         )
                     if effective_matches < 2:
                         continue
+                    # Raw-spectrum verification can complete a family, but it
+                    # must not create one from a single detected coincidence.
+                    # At least two distinct peaks are required before verified
+                    # missing members may contribute.
+                    if len(matches) < 2:
+                        continue
                     fit = fit_isotope_family_tof(
                         np.asarray(raw_mz, dtype=np.float64),
-                        target_mz_da=expected_mz,
+                        # As in atomic recovery, fit locally around the shared
+                        # shift already established by the detected members.
+                        # A wide bound around the unshifted target is not enough
+                        # for the local optimizer to cross a large empty gap.
+                        target_mz_da=expected_mz + shift,
                         sigma_da_init=max(0.01, dominant_mz / 800.0 / 2.354820045),
                         window_margin_da=float(analysis_cfg["custom_family_hint_window_margin_da"]),
-                        shift_tolerance_da=abs(shift) + 0.03,
+                        shift_tolerance_da=max(match_tolerance(dominant_mz), 0.03),
                         sigma_floor_da=float(analysis_cfg["custom_family_hint_sigma_floor_da"]),
                         sigma_ceiling_da=float(analysis_cfg["custom_family_hint_sigma_ceiling_da"]),
                         bins_per_sigma=float(analysis_cfg["custom_family_hint_bins_per_sigma"]),
@@ -1035,7 +1178,27 @@ def _annotate_molecular_family_recovery(
                     fitted_counts = np.asarray(fit["fitted_counts"], dtype=float)
                     if float(fitted_counts.sum()) < min_counts:
                         continue
-                    fitted_fraction = np.asarray(fit["fitted_fraction"], dtype=float)
+                    (
+                        robust_fitted_counts,
+                        fitted_fraction,
+                        interference_mask,
+                        family_scale,
+                    ) = robust_family_observation(
+                        fitted_counts,
+                        fractions,
+                        min_observed_members=int(
+                            analysis_cfg.get(
+                                "custom_molecular_family_interference_min_observed_members",
+                                4,
+                            )
+                        ),
+                        interference_ratio=float(
+                            analysis_cfg.get(
+                                "custom_molecular_family_interference_ratio",
+                                3.0,
+                            )
+                        ),
+                    )
                     l1_distance = float(np.abs(fitted_fraction - fractions).sum())
                     coherence = float(max(0.0, 1.0 - l1_distance / 2.0))
                     if coherence < min_coherence:
@@ -1070,30 +1233,227 @@ def _annotate_molecular_family_recovery(
                             "formula": dict(formula),
                             "charge": int(charge),
                             "coherence": coherence,
-                            "score": coherence * len(matches),
+                            "score": coherence
+                            * sum(
+                                not bool(interference_mask[isotope_idx])
+                                for _, isotope_idx in matches
+                            ),
                             "shift": shift,
                             "matches": matches,
+                            "effective_matches": int(effective_matches),
                             "expected_mz": expected_mz,
+                            "fitted_counts": fitted_counts,
+                            "family_scale": float(family_scale),
+                            "fractions": fractions,
+                            "interference_mask": interference_mask,
                         }
                     )
                     break
+    min_unclaimed_matches = int(
+        analysis_cfg.get("custom_molecular_family_min_unclaimed_matches", 2)
+    )
+    min_unclaimed_fraction = float(
+        analysis_cfg.get("custom_molecular_family_min_unclaimed_fraction", 0.75)
+    )
+
+    def _candidate_is_available(
+        candidate: dict[str, object],
+        available_matches: list[tuple[int, int]],
+    ) -> bool:
+        formula = dict(candidate["formula"])
+        simple_heteronuclear_diatomic = (
+            len(formula) == 2
+            and sum(int(count) for count in formula.values()) == 2
+            and all(int(count) == 1 for count in formula.values())
+        )
+        required_matches = (
+            1 if simple_heteronuclear_diatomic else min_unclaimed_matches
+        )
+        required_fraction = (
+            0.5 if simple_heteronuclear_diatomic else min_unclaimed_fraction
+        )
+        return bool(
+            len(available_matches) >= required_matches
+            and len(available_matches)
+            >= int(np.ceil(required_fraction * len(candidate["matches"])))
+        )
+
+    def _candidate_member_payload(
+        candidate: dict[str, object],
+        isotope_idx: int,
+        *,
+        selected: bool,
+        preserve_overlap_share: bool,
+    ) -> dict[str, object]:
+        formula = dict(candidate["formula"])
+        reference_mz = float(
+            np.asarray(candidate["expected_mz"], dtype=float)[isotope_idx]
+        )
+        interference = bool(
+            np.asarray(candidate["interference_mask"], dtype=bool)[isotope_idx]
+        )
+        fitted_count = float(
+            np.asarray(candidate["fitted_counts"], dtype=float)[isotope_idx]
+        )
+        expected_family_count = float(candidate["family_scale"]) * float(
+            np.asarray(candidate["fractions"], dtype=float)[isotope_idx]
+        )
+        member_confidence = float(
+            np.clip(
+                expected_family_count / max(fitted_count, 1.0e-12),
+                0.0,
+                1.0,
+            )
+        )
+        if interference and not preserve_overlap_share:
+            member_confidence = 0.0
+        homomolecular_atomic_degenerate = False
+        if len(formula) == 1:
+            element, atom_count = next(iter(formula.items()))
+            if int(atom_count) == int(candidate["charge"]):
+                atomic_masses = atomic_masses_by_symbol.get(str(element))
+                homomolecular_atomic_degenerate = bool(
+                    atomic_masses is not None
+                    and np.any(
+                        np.abs(atomic_masses - reference_mz)
+                        <= match_tolerance(reference_mz)
+                    )
+                )
+        if homomolecular_atomic_degenerate:
+            member_confidence = 0.0
+        if "H" in formula and int(candidate["charge"]) > 1:
+            member_confidence = 0.0
+        return {
+            "label": str(candidate["label"]),
+            "formula": formula,
+            "charge": int(candidate["charge"]),
+            "score": float(candidate["score"]),
+            "shift_da": float(candidate["shift"]),
+            "reference_mz_da": reference_mz,
+            "coherence": float(candidate["coherence"]),
+            "match_count": int(len(candidate["matches"])),
+            "effective_match_count": int(candidate["effective_matches"]),
+            "member_interference": interference,
+            "member_confidence": member_confidence,
+            "member_atomic_degenerate": homomolecular_atomic_degenerate,
+            "selected": selected,
+        }
+
+    ordered_candidates = sorted(
+        candidates,
+        key=lambda item: float(item["score"]),
+        reverse=True,
+    )
     claimed: set[int] = set()
-    for candidate in sorted(candidates, key=lambda item: float(item["score"]), reverse=True):
-        member_indices = [peak_idx for peak_idx, _ in candidate["matches"]]
-        if any(idx in claimed or hinted_mask[idx] for idx in member_indices):
+    for candidate in ordered_candidates:
+        available_matches = [
+            (peak_idx, isotope_idx)
+            for peak_idx, isotope_idx in candidate["matches"]
+            if peak_idx not in claimed and not hinted_mask[peak_idx]
+        ]
+        if not _candidate_is_available(candidate, available_matches):
             continue
-        for peak_idx, isotope_idx in candidate["matches"]:
+        for peak_idx, isotope_idx in available_matches:
             claimed.add(peak_idx)
-            reference_mz = float(np.asarray(candidate["expected_mz"], dtype=float)[isotope_idx])
-            peaks.at[peak_idx, "molecular_family_label"] = str(candidate["label"])
-            peaks.at[peak_idx, "molecular_family_shift_da"] = float(candidate["shift"])
-            peaks.at[peak_idx, "molecular_family_formula"] = dict(candidate["formula"])
-            peaks.at[peak_idx, "molecular_family_charge"] = int(candidate["charge"])
-            if "peak_mz_raw_da" not in peaks.columns:
-                peaks["peak_mz_raw_da"] = peaks["peak_mz_da"].astype(float)
-            if pd.isna(peaks.at[peak_idx, "peak_mz_raw_da"]):
-                peaks.at[peak_idx, "peak_mz_raw_da"] = float(peaks.at[peak_idx, "peak_mz_da"])
-            peaks.at[peak_idx, "peak_mz_da"] = reference_mz
+            peaks.at[peak_idx, "molecular_family_candidates"].append(
+                _candidate_member_payload(
+                    candidate,
+                    isotope_idx,
+                    selected=True,
+                    preserve_overlap_share=False,
+                )
+            )
+
+    # Retain one important class of overlapping alternative: a homomolecular
+    # dimer whose detected members are all upward-interfered by another
+    # envelope. This is how Mo2^3+ hides under HfN^3+ in the Mo/Hf control.
+    # General clean alternatives remain exclusive, preventing composition-rich
+    # samples from spawning self-reinforcing CrC/FeO coincidences.
+    for candidate in ordered_candidates:
+        formula = dict(candidate["formula"])
+        if len(formula) != 1 or sum(int(value) for value in formula.values()) < 2:
+            continue
+        candidate_interference = np.asarray(
+            candidate["interference_mask"],
+            dtype=bool,
+        )
+        if not any(
+            bool(candidate_interference[isotope_idx])
+            for _, isotope_idx in candidate["matches"]
+        ):
+            continue
+        available_matches = [
+            (peak_idx, isotope_idx)
+            for peak_idx, isotope_idx in candidate["matches"]
+            if not hinted_mask[peak_idx]
+        ]
+        if not _candidate_is_available(candidate, available_matches):
+            continue
+        for peak_idx, isotope_idx in available_matches:
+            existing = peaks.at[peak_idx, "molecular_family_candidates"]
+            if any(
+                item.get("formula") == formula
+                and int(item.get("charge", 0)) == int(candidate["charge"])
+                for item in existing
+            ):
+                continue
+            existing.append(
+                _candidate_member_payload(
+                    candidate,
+                    isotope_idx,
+                    selected=False,
+                    preserve_overlap_share=True,
+                )
+            )
+
+    for peak_idx in range(peaks.shape[0]):
+        peak_candidates = sorted(
+            peaks.at[peak_idx, "molecular_family_candidates"],
+            key=lambda item: (
+                bool(item.get("selected", False)),
+                float(item.get("score", 0.0)),
+                int(item.get("match_count", 0)),
+            ),
+            reverse=True,
+        )
+        peaks.at[peak_idx, "molecular_family_candidates"] = peak_candidates
+        if not peak_candidates:
+            continue
+        best = next(
+            (
+                candidate
+                for candidate in peak_candidates
+                if bool(candidate.get("selected", False))
+            ),
+            peak_candidates[0],
+        )
+        peaks.at[peak_idx, "molecular_family_label"] = best["label"]
+        peaks.at[peak_idx, "molecular_family_shift_da"] = best["shift_da"]
+        peaks.at[peak_idx, "molecular_family_formula"] = dict(best["formula"])
+        peaks.at[peak_idx, "molecular_family_charge"] = best["charge"]
+        peaks.at[peak_idx, "molecular_family_reference_mz_da"] = best[
+            "reference_mz_da"
+        ]
+        peaks.at[peak_idx, "molecular_family_coherence"] = best["coherence"]
+        peaks.at[peak_idx, "molecular_family_match_count"] = best["match_count"]
+        peaks.at[peak_idx, "molecular_family_effective_match_count"] = best[
+            "effective_match_count"
+        ]
+        peaks.at[peak_idx, "molecular_family_member_interference"] = best[
+            "member_interference"
+        ]
+        peaks.at[peak_idx, "molecular_family_member_confidence"] = best[
+            "member_confidence"
+        ]
+        peaks.at[peak_idx, "molecular_family_member_atomic_degenerate"] = best[
+            "member_atomic_degenerate"
+        ]
+        if "peak_mz_raw_da" not in peaks.columns:
+            peaks["peak_mz_raw_da"] = peaks["peak_mz_da"].astype(float)
+        if pd.isna(peaks.at[peak_idx, "peak_mz_raw_da"]):
+            peaks.at[peak_idx, "peak_mz_raw_da"] = float(
+                peaks.at[peak_idx, "peak_mz_da"]
+            )
     return peaks.sort_values("peak_mz_da", ignore_index=True)
 
 
@@ -1707,11 +2067,16 @@ def detect_custom_peaks(sample_data, config):
         counts,
         config=config,
     )
+    rescued_low_significance = 0
     if bool(analysis_cfg.get("custom_peak_significance_filter_enabled", True)) and not peaks.empty:
         # Final significance gate: a reported peak must be a significant
         # local Poisson excess over its own sidebands. Background wiggles
-        # that survive prominence thresholds die here; confirmed family
-        # members are exempt (their evidence is the fingerprint).
+        # that survive prominence thresholds die here. Confirmed family
+        # members are exempt (their evidence is the fingerprint), and a
+        # multi-resolution peak can be rescued by an independently clean,
+        # high-SNR equal-error range. The latter matters in crowded spectra:
+        # a strong neighbor can contaminate one sideband and make the local
+        # z-score strongly negative even for a real trace peak.
         significance_min_z = float(analysis_cfg.get("custom_peak_significance_min_z", 5.0))
         raw_sorted_significance = np.sort(np.asarray(sample_data.m_over_z_da, dtype=np.float64))
         keep_mask: list[bool] = []
@@ -1727,7 +2092,14 @@ def detect_custom_peaks(sample_data, config):
                 float(row["peak_mz_da"]),
                 fwhm_da=max(fwhm, 0.02),
             )
-            keep_mask.append(bool(significance_z >= significance_min_z))
+            rescue = _peak_has_significance_rescue(
+                row,
+                analysis_cfg=analysis_cfg,
+            )
+            keep_mask.append(bool(significance_z >= significance_min_z or rescue))
+            rescued_low_significance += int(
+                significance_z < significance_min_z and rescue
+            )
         dropped_insignificant = int(len(keep_mask) - int(np.sum(keep_mask)))
         peaks = peaks.loc[np.asarray(keep_mask, dtype=bool)].reset_index(drop=True)
     else:
@@ -1752,6 +2124,7 @@ def detect_custom_peaks(sample_data, config):
         "crowded_window_fits": local_fit_diagnostics,
         "adaptive_ranging": adaptive_ranging_diagnostics,
         "dropped_insignificant_peaks": dropped_insignificant,
+        "rescued_low_significance_peaks": rescued_low_significance,
     }
     return centers, counts, peaks, detection_diagnostics_payload
 
