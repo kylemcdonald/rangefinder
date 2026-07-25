@@ -2659,15 +2659,20 @@ def _apportion_integer_counts(frame: pd.DataFrame, field: str = "weighted_counts
     return frame
 
 
-def composition_tables(
+def composition_contributions(
     peaks: pd.DataFrame,
     assignments: pd.DataFrame,
     *,
     config: dict,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    """Resolve per-assignment count contributions for a fixed set of ranges.
+
+    Keeping this intermediate table explicit lets spatial analyses partition
+    the globally ranged counts without detecting or identifying the same
+    spectrum again inside every region.
+    """
     if peaks.empty or assignments.empty:
-        empty = pd.DataFrame()
-        return empty, empty, empty, empty, empty
+        return pd.DataFrame(), pd.DataFrame(), {}
     peak_areas = peaks.set_index("peak_id")["integrated_area"].fillna(0.0)
     ranked = assignments.copy()
     ranked["peak_area"] = ranked["peak_id"].map(peak_areas).fillna(0.0)
@@ -2706,6 +2711,41 @@ def composition_tables(
             "quantification_method",
         ]
     ].copy()
+    return ranked, ambiguous_peaks, overlap_diagnostics
+
+
+def composition_tables_from_contributions(
+    ranked: pd.DataFrame,
+    *,
+    config: dict,
+    ambiguous_peaks: pd.DataFrame | None = None,
+    overlap_diagnostics: dict[str, object] | None = None,
+    selected_isotope_charges: dict[str, int | float] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Aggregate a fixed per-assignment contribution table into compositions."""
+    if ranked.empty:
+        empty = pd.DataFrame()
+        return empty, empty, empty, empty, (
+            ambiguous_peaks.copy() if ambiguous_peaks is not None else empty
+        )
+    ranked = ranked.copy()
+    top = ranked[ranked["rank"] == 1].copy()
+    if ambiguous_peaks is None:
+        ambiguous_peaks = top[top["confidence"] == "ambiguous"][
+            [
+                "peak_id",
+                "species_label",
+                "isotopologue_label",
+                "probability",
+                "candidate_count",
+                "mass_error_da",
+                "quantification_probability",
+                "quantification_method",
+            ]
+        ].copy()
+    else:
+        ambiguous_peaks = ambiguous_peaks.copy()
+    overlap_diagnostics = overlap_diagnostics or {}
 
     species_rows = []
     element_rows = []
@@ -2791,12 +2831,23 @@ def composition_tables(
             family_totals["robust_counts"],
             family_totals["weighted_counts"],
         )
-        dominant_families = (
-            family_totals.sort_values(["element", "selection_score", "weighted_counts"], ascending=[True, False, False])
-            .groupby("element", as_index=False)
-            .first()[["element", "charge"]]
-            .rename(columns={"charge": "selected_charge"})
-        )
+        if selected_isotope_charges is None:
+            dominant_families = (
+                family_totals.sort_values(
+                    ["element", "selection_score", "weighted_counts"],
+                    ascending=[True, False, False],
+                )
+                .groupby("element", as_index=False)
+                .first()[["element", "charge"]]
+                .rename(columns={"charge": "selected_charge"})
+            )
+        else:
+            dominant_families = pd.DataFrame(
+                [
+                    {"element": element, "selected_charge": charge}
+                    for element, charge in sorted(selected_isotope_charges.items())
+                ]
+            )
         isotope_frame = atomic_isotope_frame.merge(dominant_families, on="element", how="inner")
         isotope_frame = isotope_frame[isotope_frame["charge"] == isotope_frame["selected_charge"]].copy()
         isotopes = isotope_frame.groupby(["element", "isotope_label"], as_index=False)[
@@ -2846,6 +2897,25 @@ def composition_tables(
         strong_z=float(config["analysis"]["strong_anomaly_min_z"]),
     )
     return species, elements, isotopes, anomalies, ambiguous_peaks
+
+
+def composition_tables(
+    peaks: pd.DataFrame,
+    assignments: pd.DataFrame,
+    *,
+    config: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    ranked, ambiguous_peaks, overlap_diagnostics = composition_contributions(
+        peaks,
+        assignments,
+        config=config,
+    )
+    return composition_tables_from_contributions(
+        ranked,
+        config=config,
+        ambiguous_peaks=ambiguous_peaks,
+        overlap_diagnostics=overlap_diagnostics,
+    )
 
 
 def isotope_anomaly_table(

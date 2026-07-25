@@ -23,7 +23,9 @@ from rangefinder.analysis.assignment import (
     infer_element_support,
     robust_family_observation,
 )
-from rangefinder.analysis.pipeline_utils import finalize_method_analysis
+from rangefinder.analysis.pipeline_utils import finalize_method_analysis, write_method_outputs
+from rangefinder.analysis.plotting import plot_spectrum, plot_zoom_regions
+from rangefinder.analysis.regions import partition_composition_by_region
 from rangefinder.analysis.segmentation import segment_sample_regions
 from rangefinder.analysis.tof_fitting import fit_isotope_family_tof, fit_local_tof_peak_mixture
 from rangefinder.references.isotopes import isotope_table
@@ -1751,9 +1753,12 @@ def _fit_crowded_peak_windows(
 
 
 def _analyze_sample_regions(sample_data, output_dir, config, artifacts):
-    """Segment the specimen into composition regions and, when it is not
-    homogeneous, run the full custom analysis independently on each region's
-    own mass spectrum under output_dir/regions/."""
+    """Segment the specimen and partition its fixed global ranging solution.
+
+    Species identities and deconvolution weights are established once from the
+    whole sample. Regional spectra only allocate each globally quantified peak
+    by the raw events inside that peak's integration window.
+    """
     import json
 
     segmentation = segment_sample_regions(
@@ -1773,35 +1778,105 @@ def _analyze_sample_regions(sample_data, output_dir, config, artifacts):
         voxel_table.to_csv(output_dir / "segmentation_voxels.csv", index=False)
     region_entries = list(segmentation.get("region_summary", []))
     if int(segmentation.get("n_regions", 1)) > 1 and event_region is not None:
-        from rangefinder.io.pos_loader import PosSampleData, PosSampleMetadata
-        from rangefinder.utils.paths import slugify
+        partitioned = partition_composition_by_region(
+            mz_values=sample_data.m_over_z_da,
+            event_region=event_region,
+            peaks=artifacts.peaks,
+            assignments=artifacts.assignments,
+            config=config,
+        )
+        partitioned["peak_allocations"].to_csv(
+            output_dir / "regional_peak_allocations.csv",
+            index=False,
+        )
+        region_results = {
+            int(result["region"]): result for result in partitioned["regions"]
+        }
+        analysis_cfg = config["analysis"]
+        histogram_bin_width = float(
+            artifacts.diagnostics.get(
+                "integration_bin_width_da",
+                analysis_cfg.get("custom_integration_bin_width_da", 0.005),
+            )
+        )
 
         for entry in region_entries:
             region = int(entry["region"])
             mask = event_region == region
+            result = region_results[region]
             region_name = f"{sample_data.metadata.sample_name} region {region + 1}"
-            region_metadata = PosSampleMetadata(
-                path=sample_data.metadata.path,
-                sample_name=region_name,
-                sample_slug=slugify(region_name),
-                event_count=int(mask.sum()),
-                file_size_bytes=int(mask.sum()) * 16,
-                verified_big_endian_float32=sample_data.metadata.verified_big_endian_float32,
-                verified_columns=sample_data.metadata.verified_columns,
-            )
-            region_data = PosSampleData(
-                metadata=region_metadata,
-                x_nm=sample_data.x_nm[mask],
-                y_nm=sample_data.y_nm[mask],
-                z_nm=sample_data.z_nm[mask],
-                m_over_z_da=sample_data.m_over_z_da[mask],
-            )
             region_dir = output_dir / "regions" / f"region-{region + 1}"
-            region_artifacts = run_custom_pipeline(
-                region_data,
-                region_dir,
-                config,
-                enable_segmentation=False,
+            region_dir.mkdir(parents=True, exist_ok=True)
+            centers, counts, _ = build_histogram(
+                sample_data.m_over_z_da[mask],
+                min_mz=float(analysis_cfg["min_mz"]),
+                max_mz=float(analysis_cfg["max_mz"]),
+                bin_width_da=histogram_bin_width,
+            )
+            regional_peaks = result["peaks"].copy()
+            if not regional_peaks.empty:
+                nearest = np.searchsorted(
+                    centers,
+                    regional_peaks["peak_mz_da"].to_numpy(dtype=float),
+                    side="left",
+                ).clip(0, max(centers.size - 1, 0))
+                regional_peaks["peak_index"] = nearest
+                regional_peaks["peak_height"] = counts[nearest]
+                regional_peaks["smoothed_height"] = counts[nearest]
+            regional_peaks.to_csv(region_dir / "peaks_summary.csv", index=False)
+            plot_spectrum(
+                centers,
+                counts,
+                regional_peaks,
+                region_dir / "full_spectrum.png",
+                title=f"{region_name} | Fixed global ranging",
+                max_mz=float(analysis_cfg["max_mz"]),
+            )
+            plot_spectrum(
+                centers,
+                counts,
+                regional_peaks,
+                region_dir / "spectrum_zoom_0_120.png",
+                title=f"{region_name} | Fixed global ranging | 0-120 Da",
+                max_mz=float(analysis_cfg["zoom_max_mz"]),
+            )
+            zoom_paths = plot_zoom_regions(
+                centers,
+                counts,
+                regional_peaks,
+                result["assignments"],
+                region_dir / "zoom_regions",
+                window_da=1.0,
+                max_regions=int(analysis_cfg["max_zoom_regions_per_method"]),
+            )
+            region_diagnostics = {
+                "quantification_mode": partitioned["quantification_mode"],
+                "identity_source": "whole_sample_assignments",
+                "event_count": int(result["event_count"]),
+                "event_fraction": float(result["event_count"]) / max(
+                    int(sample_data.metadata.event_count), 1
+                ),
+                "peak_count": int(regional_peaks.shape[0]),
+                "zoom_region_count": len(zoom_paths),
+                "recombination": partitioned["recombination"],
+            }
+            region_artifacts = write_method_outputs(
+                method_name="custom-region",
+                method_label="Fixed global ranging regional partition",
+                output_dir=region_dir,
+                peaks=regional_peaks,
+                assignments=result["assignments"],
+                elemental_composition=result["elements"],
+                species_composition=result["species"],
+                isotope_composition=result["isotopes"],
+                isotope_audit=pd.DataFrame(),
+                isotope_anomalies=result["anomalies"],
+                ambiguous_peaks=result["ambiguous_peaks"],
+                diagnostics=region_diagnostics,
+            )
+            result["peak_allocations"].to_csv(
+                region_dir / "peak_allocations.csv",
+                index=False,
             )
             elements = region_artifacts.elemental_composition
             if not elements.empty:
@@ -1812,7 +1887,12 @@ def _analyze_sample_regions(sample_data, output_dir, config, artifacts):
                     ).head(8).iterrows()
                     if float(row["atomic_percent_weighted"]) >= 0.1
                 }
+                entry["assigned_atom_count_weighted"] = float(
+                    elements["weighted_counts"].sum()
+                )
             entry["output_dir"] = str(region_dir)
+        segmentation["quantification_mode"] = partitioned["quantification_mode"]
+        segmentation["recombination"] = partitioned["recombination"]
     segmentation["region_summary"] = region_entries
     (output_dir / "region_summary.json").write_text(
         json.dumps(segmentation, indent=2, default=str),

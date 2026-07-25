@@ -62,6 +62,16 @@ assignment probabilities unchanged. Output tables preserve the uncorrected
 `atomic_percent_assignment` beside the promoted `atomic_percent_weighted`, and
 `diagnostics.json` records every accepted or rejected component.
 
+## Regional quantification
+
+When spatial segmentation finds multiple specimen regions, Rangefinder detects,
+identifies, and deconvolves the whole-sample spectrum exactly once. Each global
+peak contribution is then partitioned among regions by the raw events inside
+that peak's fixed integration window. Regional element, species, and isotope
+counts are required to recombine with the whole-sample counts within numerical
+precision; a failed invariant stops the analysis. This prevents low-count
+regional spectra from relabeling a global peak as a different ion.
+
 ## Install
 
 ```bash
